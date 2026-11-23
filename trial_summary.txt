@@ -1,0 +1,15 @@
+Crawls searched: CC-MAIN-2026-47, CC-MAIN-2026-43, CC-MAIN-2026-39
+  CC-MAIN-2026-47: paylocity 2 blocks
+  CC-MAIN-2026-43: paylocity 2 blocks
+  CC-MAIN-2026-39: paylocity 2 blocks
+
+paylocity: searching the index
+  CC-MAIN-2026-47: 2 blocks, 3908 matching addresses
+  CC-MAIN-2026-43: 2 blocks, 3657 matching addresses
+  CC-MAIN-2026-39: 2 blocks, 3837 matching addresses
+  distinct boards in Common Crawl: 8588
+  visiting 1500 boards for their names
+  paylocity: 8588 boards in Common Crawl; visited 1500; name found 1500; matched to our list 125; ambiguous 17; new (website crawl hadn't found) 64
+
+TRIAL SUMMARY
+paylocity: 8588 boards in Common Crawl; visited 1500; name found 1500; matched to our list 125; ambiguous 17; new (website crawl hadn't found) 64
