@@ -58,6 +58,11 @@ SITES = {
     # 6. A careers link that goes straight to UKG, no fetch needed.
     "https://zeta.org": '<a href="https://recruiting.ultipro.com/ZET1000ZETA/JobBoard/'
                         '11111111-2222-3333-4444-555555555555">Employment</a>',
+    # 8. A workforce nonprofit: a "Career Pathways" program link comes before the real "Careers" link.
+    "https://theta.org": '<a href="/programs/career-pathways">Career Pathways Program</a>'
+                         '<a href="/for-job-seekers">Job Seekers</a><a href="/about/work-here">Careers</a>',
+    "https://theta.org/about/work-here": '<a href="https://theta.applytojob.com/apply">Openings</a>',
+    "https://theta.org/programs/career-pathways": "<p>Training for adults.</p>",
     # 7. A site with no careers page anywhere.
     "https://eta.org": "<p>Donate today</p>",
 }
@@ -119,7 +124,7 @@ class FullRunTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.orgs = os.path.join(self.tmp, "orgs.csv")
         self.out = os.path.join(self.tmp, "boards.csv")
-        names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]
+        names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
         with open(self.orgs, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=["ein", "name", "state", "size_tier", "revenue", "website"])
             w.writeheader()
@@ -153,7 +158,10 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(rows["ZETA"]["ats_platform"], "ukg")
         self.assertEqual(rows["ETA"]["ats_platform"], "not_found")
         self.assertEqual(rows["NO SITE"]["method"], "no website")
-        self.assertIn("Checked this run: 8", printed)
+        # The program and job-seeker links are skipped; the real careers page leads to JazzHR.
+        self.assertEqual(rows["THETA"]["ats_platform"], "jazzhr")
+        self.assertEqual(rows["THETA"]["careers_url"], "https://theta.org/about/work-here")
+        self.assertIn("Checked this run: 9", printed)
 
     def test_rerun_skips_fresh_rows(self):
         self.run_main()
@@ -178,6 +186,13 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(rows["GAMMA"]["ats_platform"], "error")
         self.assertIn("timed out", rows["GAMMA"]["error"])
         self.assertEqual(rows["ALPHA"]["ats_platform"], "paylocity")
+
+    def test_rows_from_older_finder_are_rechecked(self):
+        self.run_main()
+        # Pretend every row came from an older version of the finder.
+        with mock.patch.object(fb, "FINDER_VERSION", "999"):
+            _, printed = self.run_main()
+        self.assertIn("to check now: 9", printed)
 
     def test_tiers_and_limit(self):
         rows, _ = self.run_main("--tiers", "A", "--limit", "2")

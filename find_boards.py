@@ -84,6 +84,10 @@ ORG_DEADLINE = 90
 # Save progress to boards.csv after this many organizations.
 SAVE_EVERY = 500
 
+# Bump this whenever a change would give different answers. Rows written by an older version are
+# rechecked on the next run instead of waiting --recheck-days.
+FINDER_VERSION = "2"
+
 # Only the first 2 MB of a page are read; that always covers its links.
 MAX_PAGE_BYTES = 2_000_000
 
@@ -93,8 +97,19 @@ TIER_ORDER = ["A", "B", "funder", "C"]
 # Words that mark a careers link, by link text or address. Earlier words are better matches.
 CAREER_WORDS = ["career", "jobs", "job openings", "employment", "join our team", "join the team",
                 "work with us", "work for us", "work here", "open positions", "opportunities"]
-# Links containing these are about volunteering or board service, not paid jobs.
-NOT_CAREER_WORDS = ["volunteer", "board of directors", "board member", "internship-only"]
+# Link text that, word for word, means "jobs at this organization". These beat any partial match,
+# so a footer "Careers" link wins over a "Career Pathways Program" link higher up the page.
+EXACT_CAREER_TEXT = {"careers", "career", "jobs", "employment", "job openings", "current openings",
+                     "open positions", "career opportunities", "job opportunities",
+                     "employment opportunities", "work with us", "work for us", "join our team",
+                     "join us", "join the team", "we're hiring", "now hiring", "careers at"}
+# Links containing these are about volunteering, board service, or (common in this sector) job
+# programs and services for the people an organization serves, not jobs at the organization.
+NOT_CAREER_WORDS = ["volunteer", "board of directors", "board member", "internship-only",
+                    "seeker", "program", "service", "training", "pathway", "workforce",
+                    "career center", "career-center", "career development", "career-development",
+                    "readiness", "resource", "student", "youth", "client", "find a job",
+                    "job search", "job-search", "job fair", "job-fair", "career fair"]
 
 # Words that mark a link to the actual job list on a careers page.
 OPENINGS_WORDS = ["current openings", "open positions", "view openings", "view jobs", "view all jobs",
@@ -163,7 +178,7 @@ BAD_IDS = {"www", "api", "embed", "careers", "jobs", "app", "help", "support", "
 
 # Column order for boards.csv.
 BOARD_COLUMNS = ["ein", "name", "state", "size_tier", "website", "careers_url", "ats_platform",
-                 "board_id", "board_url", "method", "checked_at", "error"]
+                 "board_id", "board_url", "method", "checked_at", "error", "finder_version"]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -299,9 +314,13 @@ def detect_ats(text: str) -> Optional[Dict[str, str]]:
 def score_link(url: str, text: str, words: List[str]) -> int:
     """How strongly a link looks like what we want: 0 = not at all; higher = earlier word in `words`."""
     hay = (text + " " + urllib.parse.urlparse(url).path).lower()
-    # Volunteer and board links never count.
+    # Volunteer, board and client-program links never count.
     if any(bad in hay for bad in NOT_CAREER_WORDS):
         return 0
+    # Link text that is exactly "Careers", "Jobs" and the like scores above any partial match.
+    # (Only for careers links: on a careers page we're looking for "openings" links instead.)
+    if words is CAREER_WORDS and re.sub(r"[^a-z' ]", "", text.lower()).strip() in EXACT_CAREER_TEXT:
+        return 100
     for rank, word in enumerate(words):
         if word in hay:
             return len(words) - rank
@@ -334,6 +353,7 @@ def check_org(org: Dict[str, str]) -> Dict[str, str]:
     for k in ("ein", "name", "state", "size_tier", "website"):
         row[k] = org.get(k, "")
     row["checked_at"] = datetime.date.today().isoformat()
+    row["finder_version"] = FINDER_VERSION
     if not row["website"]:
         row["ats_platform"], row["method"] = "not_found", "no website"
         return row
@@ -423,7 +443,7 @@ def timed_out_row(org: Dict[str, str], seconds: float) -> Dict[str, str]:
     row = {k: "" for k in BOARD_COLUMNS}
     for k in ("ein", "name", "state", "size_tier", "website"):
         row[k] = org.get(k, "")
-    row.update(checked_at=datetime.date.today().isoformat(), ats_platform="error",
+    row.update(checked_at=datetime.date.today().isoformat(), finder_version=FINDER_VERSION, ats_platform="error",
                error=f"timed out after {seconds:.0f}s")
     return row
 
@@ -481,6 +501,9 @@ def run_checks(todo: List[Dict[str, str]], workers: int, org_deadline: float,
 
 def is_fresh(row: Dict[str, str], today: datetime.date, recheck_days: int) -> bool:
     """True if this organization was checked recently enough to skip. Errors are retried after a week."""
+    # Rows from an older version of the finder may be wrong, so they're never fresh.
+    if row.get("finder_version") != FINDER_VERSION:
+        return False
     try:
         checked = datetime.date.fromisoformat(row.get("checked_at", ""))
     except ValueError:
