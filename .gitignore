@@ -228,3 +228,4 @@ boards.csv
 return_cache.csv.gz
 *_summary.txt
 exit_code.txt
+trial_boards.csv

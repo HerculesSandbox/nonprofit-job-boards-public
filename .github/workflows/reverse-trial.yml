@@ -1,0 +1,93 @@
+# One-off trial of the Common Crawl reverse search (experiments/reverse_trial.py).
+# Saves trial_boards.csv and the log to results/trial-<branch>. Not scheduled.
+
+name: Reverse search trial
+
+on:
+  workflow_dispatch:
+  # Runs when the trial changes on a work branch.
+  push:
+    branches-ignore: [main, "results/**"]
+    paths:
+      - "experiments/**"
+      - ".github/workflows/reverse-trial.yml"
+
+permissions:
+  contents: write
+
+# A newer run on the same branch cancels an older one.
+concurrency:
+  group: reverse-trial-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+      # Same restore logic as the job-board finder: this branch, then main, then any other.
+      - name: Restore orgs.csv and boards.csv
+        id: restore
+        run: |
+          restore() {   # restore <file> <results prefix>
+            local file="$1" prefix="$2" b
+            for b in "${prefix}-${GITHUB_REF_NAME}" "${prefix}-main" \
+                     $(git ls-remote --heads origin "${prefix}-*" | awk '{print $2}' | sed 's#refs/heads/##'); do
+              if git fetch -q --depth=1 origin "$b" 2>/dev/null \
+                 && git show "FETCH_HEAD:$file" > "/tmp/$file" 2>/dev/null; then
+                mv "/tmp/$file" "$file"
+                echo "Restored $file from $b"
+                return 0
+              fi
+            done
+            echo "No $file found on any ${prefix}-* branch"
+            return 1
+          }
+          restore orgs.csv results/orgs
+          restore boards.csv results/boards || true
+
+      # "timeout 75m" kills the trial if it runs too long, so the log still gets saved.
+      - name: Run the trial
+        id: trial
+        run: |
+          set +e
+          timeout 75m python -u experiments/reverse_trial.py 2>&1 | tee trial_summary.txt
+          echo "${PIPESTATUS[0]}" > exit_code.txt
+
+      - name: Push the result to a side branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RESULTS_BRANCH="results/trial-${GITHUB_REF_NAME}"
+          OUT="$(mktemp -d)"
+          {
+            echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "restore step: ${{ steps.restore.outcome }}"
+            echo "trial step: ${{ steps.trial.outcome }}"
+            echo "finished: $(date -u)"
+          } > "$OUT/run_info.txt"
+          for f in trial_boards.csv trial_summary.txt exit_code.txt; do
+            if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
+          done
+          cd "$OUT"
+          git init -q -b "$RESULTS_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Reverse search trial from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RESULTS_BRANCH"
