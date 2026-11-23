@@ -221,3 +221,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Data files the builds write; they live on results/... branches, not main.
+orgs.csv
+boards.csv
+return_cache.csv.gz
+*_summary.txt
+exit_code.txt
