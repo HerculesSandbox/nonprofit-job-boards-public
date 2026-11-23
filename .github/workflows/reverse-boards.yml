@@ -1,0 +1,130 @@
+# Finds job boards by searching Common Crawl for hiring-system addresses (reverse_boards.py),
+# then merges them with the website crawl's results into job_boards.csv.
+# Reads orgs.csv and boards.csv from the other stages' results branches; writes to
+# results/reverse-<branch>. Each run continues where the last one stopped.
+
+name: Reverse search for job boards
+
+on:
+  # The "Run workflow" button.
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: "Stop starting new board visits after this many minutes."
+        required: false
+        default: "180"
+  # Daily at 13:17 UTC (7:17 AM US Central time in winter), after the website crawl
+  # (08:23 UTC, up to 4 hours) has saved its results, so job_boards.csv merges the newest of both.
+  schedule:
+    - cron: "17 13 * * *"
+  # Runs when the reverse search changes on a work branch, as a 20-minute test.
+  push:
+    branches-ignore: [main, "results/**"]
+    paths:
+      - "reverse_boards.py"
+      - "tests/test_reverse_boards.py"
+      - ".github/workflows/reverse-boards.yml"
+
+permissions:
+  contents: write
+
+# One run at a time per branch; a newer run cancels an older one still going.
+concurrency:
+  group: reverse-boards-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reverse:
+    runs-on: ubuntu-latest
+    # The script stops itself at --max-minutes; this is a safety net well past that.
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+      # Inputs and progress from results branches: this branch's, then main's, then any other.
+      - name: Restore orgs.csv, boards.csv and earlier progress
+        id: restore
+        run: |
+          restore() {   # restore <file> <results prefix>
+            local file="$1" prefix="$2" b
+            for b in "${prefix}-${GITHUB_REF_NAME}" "${prefix}-main" \
+                     $(git ls-remote --heads origin "${prefix}-*" | awk '{print $2}' | sed 's#refs/heads/##'); do
+              if git fetch -q --depth=1 origin "$b" 2>/dev/null \
+                 && git show "FETCH_HEAD:$file" > "/tmp/$file" 2>/dev/null; then
+                mv "/tmp/$file" "$file"
+                echo "Restored $file from $b"
+                return 0
+              fi
+            done
+            echo "No $file found on any ${prefix}-* branch"
+            return 1
+          }
+          restore orgs.csv results/orgs
+          restore boards.csv results/boards || true
+          restore reverse_boards.csv results/reverse || true
+
+      # Push runs are tests of a change, so they stop starting visits after 20 minutes.
+      # "timeout" kills the script 15 minutes past its own limit, so the results still get saved.
+      - name: Search Common Crawl and visit boards
+        id: reverse
+        env:
+          MAX_MINUTES: ${{ github.event.inputs.max_minutes }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set +e
+          if [ "$EVENT" = "push" ]; then MAX_MINUTES=20; fi
+          MAX_MINUTES="${MAX_MINUTES:-180}"
+          timeout "$(( MAX_MINUTES + 15 ))m" python -u reverse_boards.py --max-minutes "$MAX_MINUTES" 2>&1 | tee reverse_summary.txt
+          echo "${PIPESTATUS[0]}" > exit_code.txt
+
+      - name: Write the run summary
+        if: always()
+        run: |
+          echo '### Reverse search for job boards' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -30 reverse_summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no summary)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Save the outputs to results/reverse-<branch>, even after a failure.
+      - name: Push the result to a side branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RESULTS_BRANCH="results/reverse-${GITHUB_REF_NAME}"
+          OUT="$(mktemp -d)"
+          {
+            echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "restore step: ${{ steps.restore.outcome }}"
+            echo "reverse step: ${{ steps.reverse.outcome }}"
+            echo "finished: $(date -u)"
+          } > "$OUT/run_info.txt"
+          for f in reverse_boards.csv job_boards.csv reverse_summary.txt exit_code.txt; do
+            if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
+          done
+          cd "$OUT"
+          git init -q -b "$RESULTS_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Reverse search from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RESULTS_BRANCH"
+
+      - name: Report the script's result
+        if: always()
+        run: |
+          CODE="$(cat exit_code.txt 2>/dev/null || echo 1)"
+          echo "Exit code: $CODE"
+          exit "$CODE"

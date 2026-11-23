@@ -62,3 +62,17 @@ organization. `site_page` means jobs are posted on the organization's own site; 
 Runs daily and from the **Find job boards** button in the Actions tab. Each run stops
 at 4 hours and saves its progress; organizations are rechecked every 30 days. Results land on the
 branch `results/boards-main`.
+
+## Stage 2b: `reverse_boards.py`
+
+Finds boards the website crawl misses by starting from the hiring systems. It reads the slices of
+Common Crawl's public index that hold Paylocity, ADP, Paycom, UKG, Workday, iCIMS, BambooHR,
+ApplicantPro, JazzHR, isolved, Dayforce, Paycor, Greenhouse, Lever and Ashby board addresses,
+visits each board for the organization name it shows, and matches that name to `orgs.csv`
+(names shared by several organizations are left unmatched rather than guessed).
+
+**Outputs:** `reverse_boards.csv` (every board found and its match) and **`job_boards.csv`**, the
+combined list: one row per organization per board or careers page, with `source` set to
+`website crawl`, `reverse search` or `both`.
+
+Runs daily after the website crawl. Results land on the branch `results/reverse-main`.
