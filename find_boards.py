@@ -110,6 +110,10 @@ USER_AGENT = (
 )
 
 # Known applicant tracking systems: (name, address pattern, how to build a clean board URL).
+# Patterns that start with a subdomain use (?<![a-z0-9-]) ("not right after a letter, digit or
+# dash") and {1,63} (subdomains are at most 63 characters). Without those, a page with one long
+# unbroken string, like minified code, makes the search retry from every character, and the time
+# grows with the square of the length: one 2 MB page could freeze the whole run for hours.
 # The pattern's groups capture the board ID. Matching ignores capitals.
 # "{1}" in the board URL is replaced by the first captured group, "{2}" by the second, and so on.
 ATS_PATTERNS: List[Tuple[str, str, str]] = [
@@ -118,9 +122,9 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
     ("adp", r"workforcenow\.adp\.com/[^\"'\s<>]*?cid=([0-9a-f-]{36})",
      "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid={1}"),
     ("adp", r"myjobs\.adp\.com/([a-z0-9-]+)", "https://myjobs.adp.com/{1}"),
-    ("ukg", r"recruiting2?\.ultipro\.com/([a-z0-9]+)/jobboard/([0-9a-f-]{36})",
+    ("ukg", r"recruiting2?\.ultipro\.com/([a-z0-9]{1,63})/jobboard/([0-9a-f-]{36})",
      "https://recruiting.ultipro.com/{1}/JobBoard/{2}"),
-    ("ukg", r"([a-z0-9-]+\.rec\.pro\.ukg\.net)/([a-z0-9]+)/jobboard/([0-9a-f-]{36})",
+    ("ukg", r"(?<![a-z0-9-])([a-z0-9-]{1,63}\.rec\.pro\.ukg\.net)/([a-z0-9]+)/jobboard/([0-9a-f-]{36})",
      "https://{1}/{2}/JobBoard/{3}"),
     ("paycom", r"paycomonline\.net/v4/ats/web\.php/jobs\?clientkey=([a-z0-9]+)",
      "https://www.paycomonline.net/v4/ats/web.php/jobs?clientkey={1}"),
@@ -128,15 +132,15 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
      "https://recruitingbypaycor.com/career/CareerHome.action?clientId={1}"),
     ("dayforce", r"jobs\.dayforcehcm\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9-]+)",
      "https://jobs.dayforcehcm.com/en-US/{1}"),
-    ("workday", r"([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9_-]+)",
+    ("workday", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9_-]+)",
      "https://{1}.{2}.myworkdayjobs.com/{3}"),
-    ("icims", r"(careers-[a-z0-9-]+|[a-z0-9-]+)\.icims\.com", "https://{1}.icims.com/jobs"),
-    ("taleo", r"([a-z0-9-]+)\.taleo\.net", "https://{1}.taleo.net"),
-    ("bamboohr", r"([a-z0-9-]+)\.bamboohr\.com/(?:careers|jobs)", "https://{1}.bamboohr.com/careers"),
-    ("applicantpro", r"([a-z0-9-]+)\.applicantpro\.com", "https://{1}.applicantpro.com/jobs/"),
-    ("jazzhr", r"([a-z0-9-]+)\.applytojob\.com", "https://{1}.applytojob.com/apply"),
-    ("isolved", r"([a-z0-9-]+)\.isolvedhire\.com", "https://{1}.isolvedhire.com/jobs/"),
-    ("clearcompany", r"([a-z0-9-]+)\.clearcompany\.com/careers", "https://{1}.clearcompany.com/careers"),
+    ("icims", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.icims\.com", "https://{1}.icims.com/jobs"),
+    ("taleo", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.taleo\.net", "https://{1}.taleo.net"),
+    ("bamboohr", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.bamboohr\.com/(?:careers|jobs)", "https://{1}.bamboohr.com/careers"),
+    ("applicantpro", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.applicantpro\.com", "https://{1}.applicantpro.com/jobs/"),
+    ("jazzhr", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.applytojob\.com", "https://{1}.applytojob.com/apply"),
+    ("isolved", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.isolvedhire\.com", "https://{1}.isolvedhire.com/jobs/"),
+    ("clearcompany", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.clearcompany\.com/careers", "https://{1}.clearcompany.com/careers"),
     # Greenhouse's embed script names the board after "for=", e.g. .../embed/job_board/js?for=acme.
     ("greenhouse", r"greenhouse\.io/embed/job_board(?:/js)?\?for=([a-z0-9]+)", "https://boards.greenhouse.io/{1}"),
     ("greenhouse", r"(?:boards|job-boards)\.greenhouse\.io/([a-z0-9]+)",
@@ -148,8 +152,8 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
      "https://careers.smartrecruiters.com/{1}"),
     ("workable", r"apply\.workable\.com/([a-z0-9-]+)", "https://apply.workable.com/{1}"),
     ("rippling", r"ats\.rippling\.com/([a-z0-9-]+)", "https://ats.rippling.com/{1}/jobs"),
-    ("breezy", r"([a-z0-9-]+)\.breezy\.hr", "https://{1}.breezy.hr"),
-    ("recruitee", r"([a-z0-9-]+)\.recruitee\.com", "https://{1}.recruitee.com"),
+    ("breezy", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.breezy\.hr", "https://{1}.breezy.hr"),
+    ("recruitee", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.recruitee\.com", "https://{1}.recruitee.com"),
     ("neogov", r"governmentjobs\.com/careers/([a-z0-9]+)", "https://www.governmentjobs.com/careers/{1}"),
     # A single Paylocity job page names no board, but still tells us the system.
     ("paylocity", r"recruiting\.paylocity\.com/recruiting/jobs/details/(\d+)", ""),

@@ -91,6 +91,16 @@ class DetectTests(unittest.TestCase):
         self.check("https://acme.applytojob.com/apply", "jazzhr", "acme")
         self.check("https://careers-acme.icims.com/jobs", "icims", "careers-acme")
 
+    def test_patterns_stay_fast_on_long_strings(self):
+        # A long unbroken run of letters (like minified code) once took hours to search.
+        import time
+        page = "x" * 200_000 + ".bamboohr.com/careers"
+        began = time.monotonic()
+        found = fb.detect_ats(page)
+        self.assertLess(time.monotonic() - began, 2.0)
+        # The run is longer than any real subdomain, so it isn't mistaken for a board.
+        self.assertIsNone(found)
+
     def test_ats_own_pages_are_not_boards(self):
         # www.icims.com is iCIMS's own site, not a customer's board.
         self.assertIsNone(fb.detect_ats("https://www.icims.com/about"))
