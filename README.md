@@ -59,6 +59,6 @@ For each organization in `orgs.csv` with a website, biggest tiers first:
 organization. `site_page` means jobs are posted on the organization's own site; `not_found` and
 `error` mean nothing was found or the site couldn't be reached.
 
-Runs weekly on Sundays and from the **Find job boards** button in the Actions tab. Each run stops
+Runs daily and from the **Find job boards** button in the Actions tab. Each run stops
 at 4 hours and saves its progress; organizations are rechecked every 30 days. Results land on the
 branch `results/boards-main`.

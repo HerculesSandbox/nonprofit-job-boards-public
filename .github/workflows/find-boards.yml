@@ -16,10 +16,11 @@ on:
         description: "Stop and save after this many minutes."
         required: false
         default: "240"
-  # Weekly, Sundays 08:23 UTC (2:23 AM US Central time in winter). Each organization is rechecked
-  # every 30 days, so a weekly run only does about a quarter of them, which saves Actions minutes.
+  # Daily at 08:23 UTC (2:23 AM US Central time in winter). Each run checks up to 4 hours' worth
+  # of organizations, so the first full pass finishes in a day or two; after that, each
+  # organization is rechecked every 30 days. Minutes are free because this repo is public.
   schedule:
-    - cron: "23 8 * * 0"
+    - cron: "23 8 * * *"
   # Runs when the finder changes on a work branch, so changes get checked on real websites.
   push:
     branches-ignore: [main, "results/**"]
