@@ -1,0 +1,21 @@
+Organizations in the chosen tiers: 90393; to check now: 82079
+  checked 500 of 82079 (2 min)
+  checked 1000 of 82079 (3 min)
+  checked 1500 of 82079 (5 min)
+  checked 2000 of 82079 (6 min)
+  checked 2500 of 82079 (8 min)
+  checked 3000 of 82079 (9 min)
+  checked 3500 of 82079 (11 min)
+  checked 4000 of 82079 (13 min)
+  checked 4500 of 82079 (15 min)
+  checked 5000 of 82079 (16 min)
+  checked 5500 of 82079 (18 min)
+  checked 6000 of 82079 (20 min)
+Time limit of 20.0 minutes reached; saving and stopping.
+
+Checked this run: 6245; still to check: 75834
+Organizations in boards.csv: 14559
+By result: not_found 5057, site_page 4774, error 1060, adp 710, paylocity 637, paycom 584, ukg 344, workday 331, icims 204, bamboohr 113, applicantpro 109, isolved 108, jazzhr 107, greenhouse 101, paycor 72, dayforce 68, lever 41, workable 36, breezy 32, taleo 30, smartrecruiters 15, rippling 14, neogov 5, recruitee 3, clearcompany 3, ashby 1
+With a readable ATS board: 3616
+  tier A: 9228 checked, 2598 ATS boards, 2805 site pages
+  tier B: 5331 checked, 1018 ATS boards, 1969 site pages
