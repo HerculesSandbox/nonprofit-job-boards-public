@@ -58,6 +58,8 @@ INDEX_CSV = """RETURN_ID,FILING_TYPE,EIN,TAX_PERIOD,SUB_DATE,TAXPAYER_NAME,RETUR
 3,EFILE,10000002,202506,2026-05-01,FAMILY STABILITY CENTER,990,3,202633333333333333,2025_TEOS_XML_01A
 4,EFILE,010000002,202506,2026-05-01,FAMILY STABILITY CENTER,990T,4,202644444444444444,2025_TEOS_XML_01A
 5,EFILE,010000006,202512,2026-05-01,BIG FAMILY FOUNDATION,990PF,5,202655555555555555,2025_TEOS_XML_01A
+6,EFILE,010000002,202406,2025-05-01,FAMILY STABILITY CENTER,990,6,202566666666666666,2025_TEOS_XML_01A
+7,EFILE,010000002,202306,2024-05-01,FAMILY STABILITY CENTER,990,7,202477777777777777,2025_TEOS_XML_01A
 """
 
 # A full 990 return, trimmed to the tags we read, with the IRS namespace like the real files.
@@ -76,6 +78,11 @@ RETURN_990 = b"""<?xml version="1.0" encoding="utf-8"?>
 RETURN_SMALL = b"""<?xml version="1.0" encoding="utf-8"?>
 <Return xmlns="http://www.irs.gov/efile"><ReturnHeader><ReturnTypeCd>990</ReturnTypeCd><TaxYr>2025</TaxYr></ReturnHeader>
 <ReturnData><IRS990><WebsiteAddressTxt>N/A</WebsiteAddressTxt><TotalEmployeeCnt>14</TotalEmployeeCnt></IRS990></ReturnData></Return>"""
+
+# The small center's 2024 return, which does list a website.
+RETURN_SMALL_2024 = b"""<?xml version="1.0" encoding="utf-8"?>
+<Return xmlns="http://www.irs.gov/efile"><ReturnHeader><ReturnTypeCd>990</ReturnTypeCd><TaxYr>2024</TaxYr></ReturnHeader>
+<ReturnData><IRS990><WebsiteAddressTxt>www.familystability.org</WebsiteAddressTxt><TotalEmployeeCnt>12</TotalEmployeeCnt></IRS990></ReturnData></Return>"""
 
 # A private foundation's 990-PF.
 RETURN_PF = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -146,6 +153,8 @@ class FullRunTest(unittest.TestCase):
             zf.writestr("2025_TEOS_XML_01A/202622222222222222_public.xml", RETURN_990)
             zf.writestr("2025_TEOS_XML_01A/202633333333333333_public.xml", RETURN_SMALL)
             zf.writestr("2025_TEOS_XML_01A/202655555555555555_public.xml", RETURN_PF)
+            zf.writestr("2025_TEOS_XML_01A/202566666666666666_public.xml", RETURN_SMALL_2024)
+            # The 2023 return is never needed (the 2024 one has a website), so it's left out.
             # A return we didn't ask for, which must be ignored.
             zf.writestr("2025_TEOS_XML_01A/209999999999999999_public.xml", RETURN_990)
 
@@ -192,15 +201,17 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(first["return_tax_year"], "2025")
         self.assertEqual(first["size_tier"], "B")
         self.assertEqual(first["zip"], "12301")
-        # The small center passed the floor on staff count, and its "N/A" website is blank.
+        # The small center passed the floor on its latest return's staff count. That return's
+        # website is "N/A", so the website comes from its older 2024 return.
         self.assertEqual(rows["010000002"]["employees"], "14")
-        self.assertEqual(rows["010000002"]["website"], "")
+        self.assertEqual(rows["010000002"]["website"], "https://www.familystability.org")
+        self.assertIn("website from 2024 return", rows["010000002"]["notes"])
         # The foundation is a funder, with its broken website fixed.
         self.assertEqual(rows["010000006"]["size_tier"], "funder")
         self.assertEqual(rows["010000006"]["website"], "https://bigfamily.org")
         # The organization with no NTEE code and no return is kept, with notes saying so.
         self.assertIn("no NTEE code", rows["010000009"]["notes"])
-        self.assertIn("no recent e-filed return", rows["010000009"]["notes"])
+        self.assertIn("no e-filed return read", rows["010000009"]["notes"])
         self.assertIn("Organizations kept: 4", printed)
 
     def test_second_run_uses_cache(self):
