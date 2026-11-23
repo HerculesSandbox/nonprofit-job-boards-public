@@ -86,7 +86,7 @@ SAVE_EVERY = 500
 
 # Bump this whenever a change would give different answers. Rows written by an older version are
 # rechecked on the next run instead of waiting --recheck-days.
-FINDER_VERSION = "2"
+FINDER_VERSION = "3"
 
 # Only the first 2 MB of a page are read; that always covers its links.
 MAX_PAGE_BYTES = 2_000_000
@@ -96,7 +96,9 @@ TIER_ORDER = ["A", "B", "funder", "C"]
 
 # Words that mark a careers link, by link text or address. Earlier words are better matches.
 CAREER_WORDS = ["career", "jobs", "job openings", "employment", "join our team", "join the team",
-                "work with us", "work for us", "work here", "open positions", "opportunities"]
+                "work with us", "work for us", "work here", "open positions",
+                # "opportunities" alone also means partnerships or sponsorships, so only with a job word.
+                "job opportunities", "career opportunities", "employment opportunities"]
 # Link text that, word for word, means "jobs at this organization". These beat any partial match,
 # so a footer "Careers" link wins over a "Career Pathways Program" link higher up the page.
 EXACT_CAREER_TEXT = {"careers", "career", "jobs", "employment", "job openings", "current openings",
@@ -109,7 +111,8 @@ NOT_CAREER_WORDS = ["volunteer", "board of directors", "board member", "internsh
                     "seeker", "program", "service", "training", "pathway", "workforce",
                     "career center", "career-center", "career development", "career-development",
                     "readiness", "resource", "student", "youth", "client", "find a job",
-                    "job search", "job-search", "job fair", "job-fair", "career fair"]
+                    "job search", "job-search", "job fair", "job-fair", "career fair",
+                    "partner", "sponsor", "bid", "rfp", "grant", "donat", "exhibit"]
 
 # Words that mark a link to the actual job list on a careers page.
 OPENINGS_WORDS = ["current openings", "open positions", "view openings", "view jobs", "view all jobs",

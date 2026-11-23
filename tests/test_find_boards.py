@@ -59,7 +59,8 @@ SITES = {
     "https://zeta.org": '<a href="https://recruiting.ultipro.com/ZET1000ZETA/JobBoard/'
                         '11111111-2222-3333-4444-555555555555">Employment</a>',
     # 8. A workforce nonprofit: a "Career Pathways" program link comes before the real "Careers" link.
-    "https://theta.org": '<a href="/programs/career-pathways">Career Pathways Program</a>'
+    "https://theta.org": '<a href="/get-involved/partnership-opportunities">Partnership Opportunities</a>'
+                         '<a href="/programs/career-pathways">Career Pathways Program</a>'
                          '<a href="/for-job-seekers">Job Seekers</a><a href="/about/work-here">Careers</a>',
     "https://theta.org/about/work-here": '<a href="https://theta.applytojob.com/apply">Openings</a>',
     "https://theta.org/programs/career-pathways": "<p>Training for adults.</p>",
