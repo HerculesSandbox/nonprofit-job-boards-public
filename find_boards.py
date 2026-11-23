@@ -30,9 +30,6 @@ from __future__ import annotations
 import argparse
 # collections.Counter counts results for the summary.
 import collections
-# concurrent.futures runs many website checks at once on separate threads, since most of the
-# time is spent waiting on slow websites rather than computing.
-import concurrent.futures
 # csv reads orgs.csv and reads and writes boards.csv.
 import csv
 # datetime stamps each check, so reruns know what's fresh.
@@ -43,6 +40,8 @@ import html
 from html.parser import HTMLParser
 # os builds file paths and checks whether boards.csv exists.
 import os
+# queue passes finished results from the worker threads back to the main loop safely.
+import queue
 # re is regular expressions: the ATS address patterns.
 import re
 # socket and ssl name the network errors we catch.
@@ -50,7 +49,10 @@ import socket
 import ssl
 # sys lets us print warnings to the error stream.
 import sys
-# time measures how long the run has taken, for --max-minutes.
+# threading runs many website checks at once, since most of the time is spent waiting on slow
+# websites rather than computing.
+import threading
+# time measures how long the run, each organization and each page download have taken.
 import time
 # urllib makes the web requests and joins relative links onto a page's address.
 import urllib.error
@@ -68,8 +70,23 @@ from typing import Dict, List, Optional, Tuple
 # so many threads speed things up a lot without overloading anything.
 WORKERS = 40
 
-# Seconds to wait for any one web page before giving up on it.
+# Seconds to wait for a website to answer or send its next piece of data.
 TIMEOUT = 15
+
+# Most seconds to spend downloading any one page in total. TIMEOUT alone isn't enough: a server
+# that sends a few bytes every 14 seconds would never trip it.
+PAGE_DEADLINE = 25
+
+# Most seconds to spend on one organization (all its pages together). After this it's recorded as
+# timed out and the run moves on, so one stuck website can't hold everything up.
+ORG_DEADLINE = 90
+
+# Save progress to boards.csv after this many organizations.
+SAVE_EVERY = 500
+
+# Bump this whenever a change would give different answers. Rows written by an older version are
+# rechecked on the next run instead of waiting --recheck-days.
+FINDER_VERSION = "3"
 
 # Only the first 2 MB of a page are read; that always covers its links.
 MAX_PAGE_BYTES = 2_000_000
@@ -79,9 +96,23 @@ TIER_ORDER = ["A", "B", "funder", "C"]
 
 # Words that mark a careers link, by link text or address. Earlier words are better matches.
 CAREER_WORDS = ["career", "jobs", "job openings", "employment", "join our team", "join the team",
-                "work with us", "work for us", "work here", "open positions", "opportunities"]
-# Links containing these are about volunteering or board service, not paid jobs.
-NOT_CAREER_WORDS = ["volunteer", "board of directors", "board member", "internship-only"]
+                "work with us", "work for us", "work here", "open positions",
+                # "opportunities" alone also means partnerships or sponsorships, so only with a job word.
+                "job opportunities", "career opportunities", "employment opportunities"]
+# Link text that, word for word, means "jobs at this organization". These beat any partial match,
+# so a footer "Careers" link wins over a "Career Pathways Program" link higher up the page.
+EXACT_CAREER_TEXT = {"careers", "career", "jobs", "employment", "job openings", "current openings",
+                     "open positions", "career opportunities", "job opportunities",
+                     "employment opportunities", "work with us", "work for us", "join our team",
+                     "join us", "join the team", "we're hiring", "now hiring", "careers at"}
+# Links containing these are about volunteering, board service, or (common in this sector) job
+# programs and services for the people an organization serves, not jobs at the organization.
+NOT_CAREER_WORDS = ["volunteer", "board of directors", "board member", "internship-only",
+                    "seeker", "program", "service", "training", "pathway", "workforce",
+                    "career center", "career-center", "career development", "career-development",
+                    "readiness", "resource", "student", "youth", "client", "find a job",
+                    "job search", "job-search", "job fair", "job-fair", "career fair",
+                    "partner", "sponsor", "bid", "rfp", "grant", "donat", "exhibit"]
 
 # Words that mark a link to the actual job list on a careers page.
 OPENINGS_WORDS = ["current openings", "open positions", "view openings", "view jobs", "view all jobs",
@@ -97,6 +128,10 @@ USER_AGENT = (
 )
 
 # Known applicant tracking systems: (name, address pattern, how to build a clean board URL).
+# Patterns that start with a subdomain use (?<![a-z0-9-]) ("not right after a letter, digit or
+# dash") and {1,63} (subdomains are at most 63 characters). Without those, a page with one long
+# unbroken string, like minified code, makes the search retry from every character, and the time
+# grows with the square of the length: one 2 MB page could freeze the whole run for hours.
 # The pattern's groups capture the board ID. Matching ignores capitals.
 # "{1}" in the board URL is replaced by the first captured group, "{2}" by the second, and so on.
 ATS_PATTERNS: List[Tuple[str, str, str]] = [
@@ -105,9 +140,9 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
     ("adp", r"workforcenow\.adp\.com/[^\"'\s<>]*?cid=([0-9a-f-]{36})",
      "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid={1}"),
     ("adp", r"myjobs\.adp\.com/([a-z0-9-]+)", "https://myjobs.adp.com/{1}"),
-    ("ukg", r"recruiting2?\.ultipro\.com/([a-z0-9]+)/jobboard/([0-9a-f-]{36})",
+    ("ukg", r"recruiting2?\.ultipro\.com/([a-z0-9]{1,63})/jobboard/([0-9a-f-]{36})",
      "https://recruiting.ultipro.com/{1}/JobBoard/{2}"),
-    ("ukg", r"([a-z0-9-]+\.rec\.pro\.ukg\.net)/([a-z0-9]+)/jobboard/([0-9a-f-]{36})",
+    ("ukg", r"(?<![a-z0-9-])([a-z0-9-]{1,63}\.rec\.pro\.ukg\.net)/([a-z0-9]+)/jobboard/([0-9a-f-]{36})",
      "https://{1}/{2}/JobBoard/{3}"),
     ("paycom", r"paycomonline\.net/v4/ats/web\.php/jobs\?clientkey=([a-z0-9]+)",
      "https://www.paycomonline.net/v4/ats/web.php/jobs?clientkey={1}"),
@@ -115,15 +150,15 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
      "https://recruitingbypaycor.com/career/CareerHome.action?clientId={1}"),
     ("dayforce", r"jobs\.dayforcehcm\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9-]+)",
      "https://jobs.dayforcehcm.com/en-US/{1}"),
-    ("workday", r"([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9_-]+)",
+    ("workday", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9_-]+)",
      "https://{1}.{2}.myworkdayjobs.com/{3}"),
-    ("icims", r"(careers-[a-z0-9-]+|[a-z0-9-]+)\.icims\.com", "https://{1}.icims.com/jobs"),
-    ("taleo", r"([a-z0-9-]+)\.taleo\.net", "https://{1}.taleo.net"),
-    ("bamboohr", r"([a-z0-9-]+)\.bamboohr\.com/(?:careers|jobs)", "https://{1}.bamboohr.com/careers"),
-    ("applicantpro", r"([a-z0-9-]+)\.applicantpro\.com", "https://{1}.applicantpro.com/jobs/"),
-    ("jazzhr", r"([a-z0-9-]+)\.applytojob\.com", "https://{1}.applytojob.com/apply"),
-    ("isolved", r"([a-z0-9-]+)\.isolvedhire\.com", "https://{1}.isolvedhire.com/jobs/"),
-    ("clearcompany", r"([a-z0-9-]+)\.clearcompany\.com/careers", "https://{1}.clearcompany.com/careers"),
+    ("icims", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.icims\.com", "https://{1}.icims.com/jobs"),
+    ("taleo", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.taleo\.net", "https://{1}.taleo.net"),
+    ("bamboohr", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.bamboohr\.com/(?:careers|jobs)", "https://{1}.bamboohr.com/careers"),
+    ("applicantpro", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.applicantpro\.com", "https://{1}.applicantpro.com/jobs/"),
+    ("jazzhr", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.applytojob\.com", "https://{1}.applytojob.com/apply"),
+    ("isolved", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.isolvedhire\.com", "https://{1}.isolvedhire.com/jobs/"),
+    ("clearcompany", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.clearcompany\.com/careers", "https://{1}.clearcompany.com/careers"),
     # Greenhouse's embed script names the board after "for=", e.g. .../embed/job_board/js?for=acme.
     ("greenhouse", r"greenhouse\.io/embed/job_board(?:/js)?\?for=([a-z0-9]+)", "https://boards.greenhouse.io/{1}"),
     ("greenhouse", r"(?:boards|job-boards)\.greenhouse\.io/([a-z0-9]+)",
@@ -135,8 +170,8 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
      "https://careers.smartrecruiters.com/{1}"),
     ("workable", r"apply\.workable\.com/([a-z0-9-]+)", "https://apply.workable.com/{1}"),
     ("rippling", r"ats\.rippling\.com/([a-z0-9-]+)", "https://ats.rippling.com/{1}/jobs"),
-    ("breezy", r"([a-z0-9-]+)\.breezy\.hr", "https://{1}.breezy.hr"),
-    ("recruitee", r"([a-z0-9-]+)\.recruitee\.com", "https://{1}.recruitee.com"),
+    ("breezy", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.breezy\.hr", "https://{1}.breezy.hr"),
+    ("recruitee", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.recruitee\.com", "https://{1}.recruitee.com"),
     ("neogov", r"governmentjobs\.com/careers/([a-z0-9]+)", "https://www.governmentjobs.com/careers/{1}"),
     # A single Paylocity job page names no board, but still tells us the system.
     ("paylocity", r"recruiting\.paylocity\.com/recruiting/jobs/details/(\d+)", ""),
@@ -146,7 +181,7 @@ BAD_IDS = {"www", "api", "embed", "careers", "jobs", "app", "help", "support", "
 
 # Column order for boards.csv.
 BOARD_COLUMNS = ["ein", "name", "state", "size_tier", "website", "careers_url", "ats_platform",
-                 "board_id", "board_url", "method", "checked_at", "error"]
+                 "board_id", "board_url", "method", "checked_at", "error", "finder_version"]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -163,11 +198,24 @@ NETWORK_ERRORS = (urllib.error.URLError, socket.timeout, ssl.SSLError, Connectio
 def fetch_page(url: str) -> Tuple[str, str]:
     """Download a page. Returns (its final address after any redirects, its text)."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"})
+    # When this page's time is up, by the computer's steady clock.
+    deadline = time.monotonic() + PAGE_DEADLINE
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        # Read at most MAX_PAGE_BYTES; giant pages are almost never careers pages.
-        data = resp.read(MAX_PAGE_BYTES)
+        chunks: List[bytes] = []
+        size = 0
+        # Read in 64 KB pieces, stopping at MAX_PAGE_BYTES (giant pages are almost never careers
+        # pages) or when the page deadline passes, whichever comes first.
+        while size < MAX_PAGE_BYTES:
+            if time.monotonic() > deadline:
+                raise socket.timeout(f"page took over {PAGE_DEADLINE}s")
+            piece = resp.read(65536)
+            # An empty piece means the server has sent the whole page.
+            if not piece:
+                break
+            chunks.append(piece)
+            size += len(piece)
         # resp.geturl() is where we ended up, which matters for joining relative links.
-        return resp.geturl(), data.decode("utf-8", errors="replace")
+        return resp.geturl(), b"".join(chunks).decode("utf-8", errors="replace")
 
 
 def fetch_with_fallback(url: str) -> Tuple[str, str]:
@@ -269,9 +317,13 @@ def detect_ats(text: str) -> Optional[Dict[str, str]]:
 def score_link(url: str, text: str, words: List[str]) -> int:
     """How strongly a link looks like what we want: 0 = not at all; higher = earlier word in `words`."""
     hay = (text + " " + urllib.parse.urlparse(url).path).lower()
-    # Volunteer and board links never count.
+    # Volunteer, board and client-program links never count.
     if any(bad in hay for bad in NOT_CAREER_WORDS):
         return 0
+    # Link text that is exactly "Careers", "Jobs" and the like scores above any partial match.
+    # (Only for careers links: on a careers page we're looking for "openings" links instead.)
+    if words is CAREER_WORDS and re.sub(r"[^a-z' ]", "", text.lower()).strip() in EXACT_CAREER_TEXT:
+        return 100
     for rank, word in enumerate(words):
         if word in hay:
             return len(words) - rank
@@ -304,6 +356,7 @@ def check_org(org: Dict[str, str]) -> Dict[str, str]:
     for k in ("ein", "name", "state", "size_tier", "website"):
         row[k] = org.get(k, "")
     row["checked_at"] = datetime.date.today().isoformat()
+    row["finder_version"] = FINDER_VERSION
     if not row["website"]:
         row["ats_platform"], row["method"] = "not_found", "no website"
         return row
@@ -388,8 +441,72 @@ def write_boards(path: str, rows: Dict[str, Dict[str, str]]) -> None:
     os.replace(tmp, path)
 
 
+def timed_out_row(org: Dict[str, str], seconds: float) -> Dict[str, str]:
+    """A boards.csv row for an organization that took longer than ORG_DEADLINE."""
+    row = {k: "" for k in BOARD_COLUMNS}
+    for k in ("ein", "name", "state", "size_tier", "website"):
+        row[k] = org.get(k, "")
+    row.update(checked_at=datetime.date.today().isoformat(), finder_version=FINDER_VERSION, ats_platform="error",
+               error=f"timed out after {seconds:.0f}s")
+    return row
+
+
+def run_checks(todo: List[Dict[str, str]], workers: int, org_deadline: float,
+               stop_at: Optional[float], on_result) -> int:
+    """
+    Check every organization in `todo`, `workers` at a time, calling on_result(row) for each.
+    An organization that takes longer than `org_deadline` seconds is recorded as timed out and
+    left behind; its thread is a "daemon" thread, which Python doesn't wait for when the script
+    ends, so a stuck website can never keep the run going. No new checks start after `stop_at`
+    (a time on time.monotonic()'s clock). Returns how many organizations were finished.
+    """
+    # Finished rows arrive here from the worker threads.
+    done: "queue.Queue[Dict[str, str]]" = queue.Queue()
+    # Organizations not started yet; reversed so pop() takes them in the original order.
+    pending = list(reversed(todo))
+    # Organizations being checked right now: EIN -> (start time, organization).
+    in_flight: Dict[str, Tuple[float, Dict[str, str]]] = {}
+    finished = 0
+
+    def worker(org: Dict[str, str]) -> None:
+        # Runs on its own thread: check one organization and hand back the row.
+        done.put(check_org(org))
+
+    while True:
+        time_up = stop_at is not None and time.monotonic() > stop_at
+        # Start new checks while there's room and time.
+        while pending and len(in_flight) < workers and not time_up:
+            org = pending.pop()
+            in_flight[org["ein"]] = (time.monotonic(), org)
+            threading.Thread(target=worker, args=(org,), daemon=True).start()
+        # Nothing running and nothing more to start (or no time to start it): we're done.
+        if not in_flight:
+            break
+        # Wait up to 1 second for a result, then go round again to check the deadlines.
+        try:
+            row = done.get(timeout=1)
+            # Ignore a result that arrives after its organization was already marked timed out.
+            if row["ein"] in in_flight:
+                del in_flight[row["ein"]]
+                on_result(row)
+                finished += 1
+        except queue.Empty:
+            pass
+        # Give up on any organization that has run past its deadline.
+        now = time.monotonic()
+        for ein, (began, org) in list(in_flight.items()):
+            if now - began > org_deadline:
+                del in_flight[ein]
+                on_result(timed_out_row(org, now - began))
+                finished += 1
+    return finished
+
+
 def is_fresh(row: Dict[str, str], today: datetime.date, recheck_days: int) -> bool:
     """True if this organization was checked recently enough to skip. Errors are retried after a week."""
+    # Rows from an older version of the finder may be wrong, so they're never fresh.
+    if row.get("finder_version") != FINDER_VERSION:
+        return False
     try:
         checked = datetime.date.fromisoformat(row.get("checked_at", ""))
     except ValueError:
@@ -424,6 +541,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--max-minutes", type=float, default=None, help="Stop and save after this many minutes.")
     parser.add_argument("--recheck-days", type=int, default=30, help="Skip organizations checked this recently.")
     parser.add_argument("--workers", type=int, default=WORKERS, help="How many websites to check at once.")
+    parser.add_argument("--org-timeout", type=float, default=ORG_DEADLINE,
+                        help="Seconds before giving up on one organization.")
     args = parser.parse_args(argv)
 
     started = time.monotonic()
@@ -441,21 +560,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         todo = todo[:args.limit]
     print(f"Organizations in the chosen tiers: {len(orgs)}; to check now: {len(todo)}")
 
-    checked = 0
-    # Work in chunks so progress is saved often and the time limit is checked between chunks.
-    chunk_size = args.workers * 10
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for start in range(0, len(todo), chunk_size):
-            if args.max_minutes is not None and (time.monotonic() - started) / 60 > args.max_minutes:
-                print(f"Time limit of {args.max_minutes} minutes reached; saving and stopping.")
-                break
-            chunk = todo[start:start + chunk_size]
-            # pool.map runs check_org on every organization in the chunk, `workers` at a time.
-            for row in pool.map(check_org, chunk):
-                results[row["ein"]] = row
-            checked += len(chunk)
+    # Stop starting new checks once --max-minutes is reached.
+    stop_at = started + args.max_minutes * 60 if args.max_minutes is not None else None
+    # A one-item list so the function below can update the count (a plain number couldn't be changed from inside it).
+    count = [0]
+
+    def save(row: Dict[str, str]) -> None:
+        # Store each finished row, and save the file and report progress every SAVE_EVERY rows.
+        results[row["ein"]] = row
+        count[0] += 1
+        if count[0] % SAVE_EVERY == 0:
             write_boards(args.out, results)
-            print(f"  checked {checked} of {len(todo)} ({(time.monotonic() - started) / 60:.0f} min)")
+            print(f"  checked {count[0]} of {len(todo)} ({(time.monotonic() - started) / 60:.0f} min)")
+
+    checked = run_checks(todo, args.workers, args.org_timeout, stop_at, save)
+    if checked < len(todo):
+        print(f"Time limit of {args.max_minutes} minutes reached; saving and stopping.")
 
     write_boards(args.out, results)
     print_summary(results, checked, len(todo) - checked)

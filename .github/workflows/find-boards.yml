@@ -37,10 +37,11 @@ on:
 permissions:
   contents: write
 
-# One run at a time per branch, so two runs never save results at once.
+# One run at a time per branch, so two runs never save results at once. A newer run cancels an
+# older one still going on the same branch, so a stuck run never blocks a fix.
 concurrency:
   group: find-boards-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   tests:
@@ -78,6 +79,8 @@ jobs:
       # Order of preference: this branch's own results, then main's, then any other results
       # branch (newest first in GitHub's list), so a new branch still starts from real data.
       - name: Restore orgs.csv and earlier progress
+        # An id lets later steps ask whether this step succeeded.
+        id: restore
         run: |
           restore() {   # restore <file> <results prefix>
             local file="$1" prefix="$2" b
@@ -97,19 +100,23 @@ jobs:
           restore orgs.csv results/orgs
           restore boards.csv results/boards || true
 
-      # Push runs on work branches are tests of a change, so they stop after 45 minutes.
+      # Push runs on work branches are tests of a change, so they stop after 20 minutes.
       # Scheduled and button runs use the max_minutes box (240 by default).
       - name: Find job boards
+        id: find
         env:
           TIERS: ${{ github.event.inputs.tiers }}
           MAX_MINUTES: ${{ github.event.inputs.max_minutes }}
           EVENT: ${{ github.event_name }}
         run: |
           set +e
-          if [ "$EVENT" = "push" ]; then MAX_MINUTES=45; fi
+          if [ "$EVENT" = "push" ]; then MAX_MINUTES=20; fi
           ARGS=(--max-minutes "${MAX_MINUTES:-240}")
           if [ -n "$TIERS" ]; then ARGS+=(--tiers "$TIERS"); fi
-          python -u find_boards.py "${ARGS[@]}" 2>&1 | tee find_summary.txt
+          # "timeout" is a Linux command that kills the finder if it runs 5 minutes past its own
+          # limit, so a hang can never stop the results from being saved.
+          LIMIT=$(( ${MAX_MINUTES:-240} + 5 ))
+          timeout "${LIMIT}m" python -u find_boards.py "${ARGS[@]}" 2>&1 | tee find_summary.txt
           echo "${PIPESTATUS[0]}" > exit_code.txt
 
       - name: Write the run summary
@@ -128,6 +135,14 @@ jobs:
         run: |
           RESULTS_BRANCH="results/boards-${GITHUB_REF_NAME}"
           OUT="$(mktemp -d)"
+          # A status file, so the branch always gets something to save, even when an early step
+          # failed. steps.<id>.outcome is "success", "failure" or "skipped".
+          {
+            echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "restore step: ${{ steps.restore.outcome }}"
+            echo "find step: ${{ steps.find.outcome }}"
+            echo "finished: $(date -u)"
+          } > "$OUT/run_info.txt"
           for f in boards.csv find_summary.txt exit_code.txt; do
             if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
           done
