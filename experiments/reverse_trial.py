@@ -70,9 +70,12 @@ CRAWLS_TO_SEARCH = 3
 #         with this sits together in the index, so we only read that slice.
 #   keep: a regular expression the address must also match.
 SYSTEMS = {
-    "paylocity": {"surt": "com,paylocity,recruiting)/recruiting/jobs/all/", "keep": r"/recruiting/jobs/all/"},
-    "bamboohr": {"surt": "com,bamboohr,", "keep": r"\.bamboohr\.com/careers"},
+    "paylocity": {"surt": "com,paylocity,recruiting)/recruiting/jobs/all/", "keep": r"/recruiting/jobs/all/",
+                  # Paylocity answers "429 Too Many Requests" at 20 visits at a time, so go slowly.
+                  "workers": 3, "pause": 0.5, "max_visits": 1500},
 }
+# BambooHR was measured in the first successful trial: 5,686 boards; of 3,000 visited, 198 matched
+# an organization on the list and 160 of those were new. Re-add it here to measure it again.
 
 # Most index slices ("blocks", about 3,000 addresses each) to read per crawl and system.
 MAX_BLOCKS = 300
@@ -293,10 +296,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                         boards[found["board_url"].lower()] = found["board_url"]
             print(f"  {crawl_id}: {len(blocks)} blocks, {seen} matching addresses")
         print(f"  distinct boards in Common Crawl: {len(boards)}")
-        to_visit = list(boards.values())[:MAX_BOARDS_TO_VISIT]
+        to_visit = list(boards.values())[:pattern.get("max_visits", MAX_BOARDS_TO_VISIT)]
         print(f"  visiting {len(to_visit)} boards for their names")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
-            visited = list(pool.map(board_name, to_visit))
+        pause = pattern.get("pause", 0)
+
+        def visit(url: str) -> Dict[str, str]:
+            # Wait a moment before each visit when this system asks us to slow down.
+            time.sleep(pause)
+            return board_name(url)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=pattern.get("workers", 20)) as pool:
+            visited = list(pool.map(visit, to_visit))
 
         named = matched = new = ambiguous = 0
         for v in visited:
