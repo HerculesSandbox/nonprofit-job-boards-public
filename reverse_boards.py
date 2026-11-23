@@ -141,6 +141,11 @@ LEGAL_ENDINGS = {"inc", "incorporated", "the", "llc", "ltd", "co", "corp", "corp
 # Board IDs shorter than this are too generic to match on ("hope", "arc").
 MIN_BOARD_ID_LENGTH = 8
 
+# Names with fewer words than this are common enough that companies share them ("Brookfield",
+# "Heartland", "Health Care"). A board ID only matches such a name if the organization's own
+# website address agrees ("hosparus" and hosparus.org). Longer names are distinctive on their own.
+MIN_WORDS_WITHOUT_WEBSITE = 3
+
 # Workday "site" names that are really Workday's own pages.
 NOT_WORKDAY_SITES = {"wday", "robots", "robots.txt", "sitemap", "sitemap.xml", "login", "favicon.ico"}
 
@@ -354,6 +359,29 @@ def clean_name(name: str) -> str:
     return " ".join(w for w in words if w not in NAME_NOISE)
 
 
+def website_label(url: str) -> str:
+    """
+    The main part of a website address, letters and digits only:
+    "https://www.hosparus.org/careers" -> "hosparus". Empty if there's no address.
+    """
+    # Drop "http://" or "https://" at the start, then keep only the host (before the first "/").
+    host = re.sub(r"^https?://", "", (url or "").strip().lower()).split("/")[0]
+    # Drop a leading "www." (or "www2.") since it says nothing about the organization.
+    host = re.sub(r"^www\d?\.", "", host)
+    # No dot means it isn't a real address.
+    if "." not in host:
+        return ""
+    # Drop the ending (".org", ".com") and keep letters and digits: "the-arc.org" -> "thearc".
+    return re.sub(r"[^a-z0-9]", "", host.rsplit(".", 1)[0])
+
+
+def website_agrees(slug: str, org: Dict[str, str]) -> bool:
+    """True if the board ID and the organization's website name contain one another."""
+    label = website_label(org.get("website", ""))
+    # "trivalley" in "trivalleyinc", or "mather" in "matherplace": either way round counts.
+    return bool(label) and (slug in label or label in slug)
+
+
 class OrgMatcher:
     """Finds the organization in orgs.csv whose name best matches a board's name."""
 
@@ -402,7 +430,12 @@ class OrgMatcher:
         # 2. The board's ID with spaces and dashes removed ("goodwill-socal" -> "goodwillsocal").
         slug = re.sub(r"[^a-z0-9]", "", (board_id or "").split("/")[0].lower())
         if len(slug) >= MIN_BOARD_ID_LENGTH and len(self.squashed.get(slug, [])) == 1:
-            return self.squashed[slug][0], 1.0, "board id", slug
+            org = self.squashed[slug][0]
+            # Count the name's words, leaving out legal endings: "HEALTH CARE CORPORATION" is 2.
+            words = [w for w in re.findall(r"[a-z0-9]+", org["name"].lower()) if w not in LEGAL_ENDINGS]
+            # Long names match on their own; short ones need the website to agree.
+            if len(words) >= MIN_WORDS_WITHOUT_WEBSITE or website_agrees(slug, org):
+                return org, 1.0, "board id", slug
         if ambiguous:
             return None, 1.0, ambiguous, ""
         # 3. The most similar name starting with the same word.

@@ -27,7 +27,8 @@ GUID = "e43cbf69-d17f-4270-ab1d-ba0ec7b127d6"
 
 ORGS = [
     {"ein": "000000001", "name": "ARC OF EXAMPLE STATE INC", "state": "TX", "size_tier": "B"},
-    {"ein": "000000002", "name": "GOODWILL SOCAL", "state": "CA", "size_tier": "A"},
+    {"ein": "000000002", "name": "GOODWILL SOCAL", "state": "CA", "size_tier": "A",
+     "website": "https://www.goodwillsocal.org"},
     {"ein": "000000003", "name": "HOPE HOUSE INC", "state": "MO", "size_tier": "C"},
     {"ein": "000000004", "name": "HOPE HOUSE", "state": "WI", "size_tier": "C"},
     {"ein": "000000005", "name": "RIVER VALLEY FAMILY SERVICES", "state": "OH", "size_tier": "B"},
@@ -85,6 +86,24 @@ class NameTests(unittest.TestCase):
         org, _, how, _ = m.match(["Accenture Foundation"])
         self.assertEqual((org["ein"], how), ("000000009", "exact"))
 
+    def test_short_names_need_the_website_to_agree(self):
+        orgs = [
+            # A one-word name whose website doesn't match: a company's board with that ID is skipped.
+            {"ein": "000000010", "name": "HEARTLAND INC", "state": "KS", "website": "example-shelter.org"},
+            # A one-word name whose website matches the board ID.
+            {"ein": "000000011", "name": "EXAMPLECARE INC", "state": "OR", "website": "www.examplecare.org"},
+            # A long name with no website: distinctive enough on its own.
+            {"ein": "000000012", "name": "SPRINGFIELD PUBLIC LIBRARY", "state": "IL", "website": ""},
+        ]
+        m = rb.OrgMatcher(orgs)
+        self.assertIsNone(m.match([], board_id="heartland/CANDIDATEPORTAL")[0])
+        self.assertEqual(m.match([], board_id="examplecare/wd1/Careers")[0]["ein"], "000000011")
+        self.assertEqual(m.match([], board_id="springfieldpubliclibrary")[0]["ein"], "000000012")
+
+    def test_website_label(self):
+        self.assertEqual(rb.website_label("https://www.the-arc.org/careers"), "thearc")
+        self.assertEqual(rb.website_label("none"), "")
+
     def test_combine(self):
         crawl = [
             {"ein": "000000001", "ats_platform": "paylocity", "board_id": GUID,
@@ -117,7 +136,7 @@ class FullRunTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.paths = {k: os.path.join(self.tmp, k + ".csv") for k in ("orgs", "boards", "reverse", "combined")}
         with open(self.paths["orgs"], "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["ein", "name", "state", "size_tier"])
+            w = csv.DictWriter(f, fieldnames=["ein", "name", "state", "size_tier", "website"])
             w.writeheader()
             w.writerows(ORGS)
         # The website crawl found nothing yet.
