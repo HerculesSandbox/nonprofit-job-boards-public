@@ -148,8 +148,9 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
      "https://www.paycomonline.net/v4/ats/web.php/jobs?clientkey={1}"),
     ("paycor", r"recruitingbypaycor\.com/career/careerhome\.action\?clientid=([a-z0-9]+)",
      "https://recruitingbypaycor.com/career/CareerHome.action?clientId={1}"),
-    ("dayforce", r"jobs\.dayforcehcm\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9-]+)",
-     "https://jobs.dayforcehcm.com/en-US/{1}"),
+    # Dayforce boards are /<language>/<client>/<portal>; both parts are needed.
+    ("dayforce", r"jobs\.dayforcehcm\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9-]+)/([a-z0-9-]+)",
+     "https://jobs.dayforcehcm.com/en-US/{1}/{2}"),
     ("workday", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[a-z]{2}/)?([a-z0-9_-]+)",
      "https://{1}.{2}.myworkdayjobs.com/{3}"),
     ("icims", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.icims\.com", "https://{1}.icims.com/jobs"),

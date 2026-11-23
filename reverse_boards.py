@@ -86,6 +86,10 @@ MAX_BLOCKS = 300
 # Revisit a board after this many days, to pick up name changes and boards that went away.
 REVISIT_DAYS = 90
 
+# Bump this when a change means boards should be visited again (a new address format, a new way
+# to read names). Boards visited by an older version are revisited on the next run.
+VISIT_VERSION = "2"
+
 # Hiring systems to search. Keys match find_boards' ATS names, so its patterns turn each address
 # into a clean board URL.
 #   surts:   where the system's addresses start in "SURT" form, the reversed-domain order Common
@@ -119,17 +123,33 @@ SYSTEMS: Dict[str, Dict] = {
 }
 
 # Words that say nothing about which organization a name is, removed before comparing names.
+# "Foundation", "fund", "association" and "center" are NOT in this list: they tell a company
+# ("Acme") apart from its corporate foundation ("Acme Foundation"), both of which can be on the list.
 NAME_NOISE = {"inc", "incorporated", "the", "of", "and", "corp", "corporation", "co", "company",
-              "llc", "ltd", "foundation", "fund", "assn", "association", "org", "organization",
-              "careers", "career", "jobs", "job", "openings", "current", "opportunities", "page",
-              "employment", "home", "at", "in", "for", "us", "a", "an", "join", "team", "our",
-              "work", "with", "board", "center", "portal", "search", "applicant", "recruiting",
-              "hiring", "positions", "open", "listings", "welcome", "to"}
+              "llc", "ltd", "org", "careers", "career", "jobs", "job", "openings", "current",
+              "opportunities", "page", "employment", "home", "at", "in", "for", "us", "a", "an",
+              "join", "team", "our", "work", "with", "board", "portal", "search", "applicant",
+              "recruiting", "recruitment", "hiring", "positions", "open", "listings", "welcome", "to",
+              # The hiring systems' own names, which appear in many page titles.
+              "paylocity", "adp", "paycom", "ukg", "ultipro", "workday", "icims", "bamboohr",
+              "applicantpro", "jazzhr", "isolved", "dayforce", "paycor", "greenhouse", "lever", "ashby"}
+
+# Only legal endings are ignored when comparing a board ID with a name ("woundedwarriorproject"
+# matches "WOUNDED WARRIOR PROJECT INC", but "accenture" doesn't match "ACCENTURE FOUNDATION INC").
+LEGAL_ENDINGS = {"inc", "incorporated", "the", "llc", "ltd", "co", "corp", "corporation"}
+
+# Board IDs shorter than this are too generic to match on ("hope", "arc").
+MIN_BOARD_ID_LENGTH = 8
+
+# Workday "site" names that are really Workday's own pages.
+NOT_WORKDAY_SITES = {"wday", "robots", "robots.txt", "sitemap", "sitemap.xml", "login", "favicon.ico"}
 
 # Words that mark a name as the hiring system's own, not the organization's.
 SYSTEM_WORDS = {"paylocity", "adp", "workforce now", "paycom", "ukg", "ultipro", "workday",
                 "icims", "bamboohr", "applicantpro", "jazzhr", "isolved", "dayforce", "paycor",
-                "greenhouse", "lever", "ashby", "job not found", "page not found", "error"}
+                "greenhouse", "lever", "ashby", "job not found", "page not found", "error",
+                "recruitment", "careers", "career center", "icims careers portal",
+                "workday is currently unavailable."}
 
 # How similar two cleaned names must be to count as a near match (1.0 = identical).
 MATCH_THRESHOLD = 0.92
@@ -138,7 +158,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Column orders for the two outputs.
 REVERSE_COLUMNS = ["board_url", "ats_platform", "board_id", "crawl", "name_found", "matched_ein",
-                   "matched_name", "matched_state", "score", "how", "visited_at", "error"]
+                   "matched_name", "matched_state", "score", "how", "visited_at", "error", "visit_version"]
 JOB_BOARD_COLUMNS = ["ein", "name", "state", "size_tier", "ats_platform", "board_id", "board_url",
                      "careers_url", "source"]
 
@@ -238,8 +258,8 @@ def boards_in_crawls(crawls: List[str], systems: List[str]) -> Dict[str, Dict[st
                 # find_boards' patterns turn an address into a clean board URL and ID.
                 found = fb.detect_ats(address)
                 if found and found["ats_platform"] == system and found["board_url"]:
-                    # Workday's own data addresses (/wday/cxs/...) look like a board named "wday".
-                    if system == "workday" and found["board_id"].lower().endswith("/wday"):
+                    # Workday addresses that aren't boards: its data API (/wday/...), robots.txt, sitemaps.
+                    if system == "workday" and found["board_id"].lower().rsplit("/", 1)[-1] in NOT_WORKDAY_SITES:
                         continue
                     key = found["board_url"].lower()
                     # Keep the first sighting; later crawls only add boards we haven't seen.
@@ -278,11 +298,31 @@ def names_on_page(page: str) -> List[str]:
     return names
 
 
+# Raw responses saved for systems whose name location is still unknown (adp_samples.txt), so a
+# person can read them and point the name pattern at the right field. A few per run is enough.
+SAMPLES: Dict[str, List[str]] = collections.defaultdict(list)
+MAX_SAMPLES = 15
+
+
+def note_sample(system: str, url: str, text: str) -> None:
+    """Keep the first few raw responses for `system`."""
+    if len(SAMPLES[system]) < MAX_SAMPLES:
+        SAMPLES[system].append(f"=== {url}\n{text[:3000]}\n")
+
+
 def visit_board(board: Dict[str, str]) -> Dict[str, str]:
     """Visit one board and return its candidate names (joined by ' || ') or an error."""
     url = board["board_url"]
     try:
-        if board["ats_platform"] == "greenhouse":
+        if board["ats_platform"] == "adp" and "cid=" in url:
+            # ADP's board page draws its name with JavaScript. Its public job feed may hold it.
+            cid = re.search(r"cid=([0-9a-f-]{36})", url, re.I).group(1)
+            feed = ("https://workforcenow.adp.com/mascsr/default/careercenter/public/events/staffing/"
+                    f"v1/job-requisitions?cid={cid}&lang=en_US&locale=en_US&$top=1")
+            _, text = fb.fetch_with_fallback(feed)
+            note_sample("adp", feed, text)
+            names = names_on_page(text)
+        elif board["ats_platform"] == "greenhouse":
             # Greenhouse has a public API that returns the board's name directly.
             api = "https://boards-api.greenhouse.io/v1/boards/" + board["board_id"]
             _, text = fb.fetch_with_fallback(api)
@@ -291,8 +331,8 @@ def visit_board(board: Dict[str, str]) -> Dict[str, str]:
             _, page = fb.fetch_with_fallback(url)
             names = names_on_page(page)
         return {"names": " || ".join(n for n in names if n), "error": ""}
-    except (fb.NETWORK_ERRORS + (json.JSONDecodeError,)) as err:
-        return {"names": "", "error": str(err)[:160]}
+    except Exception as err:  # noqa: BLE001  any failure is recorded for this board, never fatal
+        return {"names": "", "error": f"{type(err).__name__}: {err}"[:160]}
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +370,9 @@ class OrgMatcher:
             if not cleaned:
                 continue
             self.exact[cleaned].append(org)
-            self.squashed[cleaned.replace(" ", "")].append(org)
+            # The whole name minus legal endings, without spaces, for board-ID matches.
+            words = re.findall(r"[a-z0-9]+", org["name"].lower().replace("&", " and "))
+            self.squashed["".join(w for w in words if w not in LEGAL_ENDINGS)].append(org)
             self.by_first_word[cleaned.split()[0]].append((cleaned, org))
 
     def match(self, names: List[str], board_id: str = "") -> Tuple[Optional[Dict[str, str]], float, str, str]:
@@ -359,7 +401,7 @@ class OrgMatcher:
                 ambiguous = f"ambiguous ({len(hits)} orgs)"
         # 2. The board's ID with spaces and dashes removed ("goodwill-socal" -> "goodwillsocal").
         slug = re.sub(r"[^a-z0-9]", "", (board_id or "").split("/")[0].lower())
-        if len(slug) >= 6 and len(self.squashed.get(slug, [])) == 1:
+        if len(slug) >= MIN_BOARD_ID_LENGTH and len(self.squashed.get(slug, [])) == 1:
             return self.squashed[slug][0], 1.0, "board id", slug
         if ambiguous:
             return None, 1.0, ambiguous, ""
@@ -399,6 +441,9 @@ def write_csv(path: str, columns: List[str], rows: Iterable[Dict[str, str]]) -> 
 
 def is_fresh(row: Dict[str, str], today: datetime.date) -> bool:
     """True if this board was visited within REVISIT_DAYS (failed visits are retried after a week)."""
+    # Visits by an older version of this script are always redone.
+    if row.get("visit_version") != VISIT_VERSION:
+        return False
     try:
         visited = datetime.date.fromisoformat(row.get("visited_at", ""))
     except ValueError:
@@ -438,7 +483,8 @@ def visit_all(todo: List[Dict[str, str]], matcher: OrgMatcher, results: Dict[str
                    "name_found": seen["names"][:300], "matched_ein": org["ein"] if org else "",
                    "matched_name": org["name"] if org else "", "matched_state": org["state"] if org else "",
                    "score": f"{score:.2f}", "how": how,
-                   "visited_at": datetime.date.today().isoformat(), "error": seen["error"]}
+                   "visited_at": datetime.date.today().isoformat(), "error": seen["error"],
+                   "visit_version": VISIT_VERSION}
             with lock:
                 results[board["board_url"].lower()] = row
                 count[0] += 1
@@ -518,6 +564,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     matcher = OrgMatcher(orgs)
     # Earlier visits, so reruns only visit new or stale boards.
     results = {r["board_url"].lower(): r for r in read_csv(args.out)}
+    # Re-match every saved board with the current rules. Matching is fast and uses only the names
+    # we already saved, so improved rules apply to every board without visiting it again.
+    for row in results.values():
+        names = [n for n in row.get("name_found", "").split(" || ") if n]
+        org, score, how, _ = matcher.match(names, row.get("board_id", ""))
+        row.update(matched_ein=org["ein"] if org else "", matched_name=org["name"] if org else "",
+                   matched_state=org["state"] if org else "", score=f"{score:.2f}", how=how)
 
     # 1. Every board Common Crawl holds for these systems.
     crawls = newest_crawls(CRAWLS_TO_SEARCH)
@@ -533,6 +586,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     visited = visit_all(todo, matcher, results, stop_at, save)
     save()
+
+    # Raw samples for systems still being worked out (see note_sample).
+    for system, texts in SAMPLES.items():
+        with open(os.path.join(HERE, f"{system}_samples.txt"), "w", encoding="utf-8") as f:
+            f.writelines(texts)
 
     # 4. The combined list.
     combined = combine(orgs, read_csv(args.boards), results.values())

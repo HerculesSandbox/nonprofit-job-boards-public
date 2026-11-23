@@ -76,6 +76,15 @@ class NameTests(unittest.TestCase):
         org, _, _, _ = m.match(["Job Not Found"])
         self.assertIsNone(org)
 
+    def test_company_never_matches_its_foundation(self):
+        m = rb.OrgMatcher(ORGS + [{"ein": "000000009", "name": "ACCENTURE FOUNDATION INC", "state": "NY", "size_tier": "funder"}])
+        # A company's own board doesn't match its corporate foundation, by name or by board ID.
+        org, _, _, _ = m.match(["Accenture Careers"], board_id="accenture/wd103/External")
+        self.assertIsNone(org)
+        # The foundation's own name still matches.
+        org, _, how, _ = m.match(["Accenture Foundation"])
+        self.assertEqual((org["ein"], how), ("000000009", "exact"))
+
     def test_combine(self):
         crawl = [
             {"ein": "000000001", "ats_platform": "paylocity", "board_id": GUID,

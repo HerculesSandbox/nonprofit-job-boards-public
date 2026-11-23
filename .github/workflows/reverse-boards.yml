@@ -111,7 +111,7 @@ jobs:
             echo "reverse step: ${{ steps.reverse.outcome }}"
             echo "finished: $(date -u)"
           } > "$OUT/run_info.txt"
-          for f in reverse_boards.csv job_boards.csv reverse_summary.txt exit_code.txt; do
+          for f in reverse_boards.csv job_boards.csv reverse_summary.txt exit_code.txt *_samples.txt; do
             if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
           done
           cd "$OUT"

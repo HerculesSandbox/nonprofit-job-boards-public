@@ -94,6 +94,7 @@ class DetectTests(unittest.TestCase):
         self.check("https://www.paycomonline.net/v4/ats/web.php/jobs?clientkey=ABC123", "paycom", "ABC123")
         self.check("https://acme.wd5.myworkdayjobs.com/en-US/External", "workday", "acme/wd5/External")
         self.check("https://jobs.lever.co/acme-org/123", "lever", "acme-org")
+        self.check("https://jobs.dayforcehcm.com/en-US/acmeorg/CANDIDATEPORTAL/jobs/123", "dayforce", "acmeorg/CANDIDATEPORTAL")
         self.check("https://acme.applytojob.com/apply", "jazzhr", "acme")
         self.check("https://careers-acme.icims.com/jobs", "icims", "careers-acme")
 
