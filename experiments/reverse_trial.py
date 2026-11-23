@@ -56,7 +56,7 @@ COLLINFO_URL = "https://index.commoncrawl.org/collinfo.json"
 
 # How many of the newest crawls to search. Each crawl covers a different slice of the web,
 # so two crawls find more boards than one.
-CRAWLS_TO_SEARCH = 2
+CRAWLS_TO_SEARCH = 3
 
 # What to ask each crawl's index for, per hiring system (keys match find_boards' ATS names):
 #   url:       the address to look up.
@@ -88,7 +88,7 @@ MATCH_THRESHOLD = 0.92
 # COMMON CRAWL INDEX
 # ---------------------------------------------------------------------------
 
-def get_json_lines(url: str, tries: int = 4) -> List[dict]:
+def get_json_lines(url: str, tries: int = 5) -> List[dict]:
     """Fetch a URL whose response is one JSON object per line. Retries, since the index is busy."""
     for attempt in range(1, tries + 1):
         try:
@@ -106,8 +106,9 @@ def get_json_lines(url: str, tries: int = 4) -> List[dict]:
         except (urllib.error.URLError, OSError, ValueError):
             if attempt == tries:
                 raise
-        # The index asks clients to slow down when busy; wait longer after each failure.
-        time.sleep(15 * attempt)
+        # The index times out (HTTP 504) when busy; wait 30 seconds and try again.
+        print(f"      busy; retry {attempt} of {tries - 1} in 30s", file=sys.stderr)
+        time.sleep(30)
     return []
 
 
@@ -120,19 +121,23 @@ def newest_crawls(n: int) -> List[Dict[str, str]]:
 
 
 def index_addresses(api: str, pattern: Dict[str, str], max_pages: int) -> Iterator[str]:
-    """Yield every address in one crawl's index that matches `pattern`, page by page."""
+    """
+    Yield every address in one crawl's index that matches `pattern`, page by page.
+    Doesn't ask for the page count first (that query times out on a busy server); it just reads
+    page 0, 1, 2... until a page comes back empty.
+    """
     base = {"url": pattern["url"], "matchType": pattern["matchType"], "output": "json", "fl": "url"}
     if pattern.get("filter"):
         base["filter"] = pattern["filter"]
-    # First ask how many pages of results there are.
-    info = get_json_lines(api + "?" + urllib.parse.urlencode(dict(base, showNumPages="true")))
-    pages = int(info[0].get("pages", 0)) if info else 0
-    print(f"    {pages} index pages")
-    for page in range(min(pages, max_pages)):
-        for record in get_json_lines(api + "?" + urllib.parse.urlencode(dict(base, page=page))):
+    for page in range(max_pages):
+        records = get_json_lines(api + "?" + urllib.parse.urlencode(dict(base, page=page)))
+        print(f"    page {page}: {len(records)} addresses")
+        if not records:
+            break
+        for record in records:
             yield record.get("url", "")
         # Be polite to a free service.
-        time.sleep(1)
+        time.sleep(2)
 
 
 # ---------------------------------------------------------------------------
