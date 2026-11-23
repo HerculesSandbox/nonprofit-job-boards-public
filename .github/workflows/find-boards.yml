@@ -1,0 +1,147 @@
+# Finds each organization's job board (find_boards.py) and saves boards.csv.
+# Reads orgs.csv from the stage 1 results branch; writes to results/boards-<branch>.
+# Each run picks up where the last one stopped, so the full list fills in over a few runs.
+
+name: Find job boards
+
+on:
+  # The "Run workflow" button, with optional boxes for a smaller run.
+  workflow_dispatch:
+    inputs:
+      tiers:
+        description: "Tiers to check, comma-separated (A, B, funder, C). Leave blank for all."
+        required: false
+        default: ""
+      max_minutes:
+        description: "Stop and save after this many minutes."
+        required: false
+        default: "240"
+  # Weekly, Sundays 08:23 UTC (2:23 AM US Central time in winter). Each organization is rechecked
+  # every 30 days, so a weekly run only does about a quarter of them, which saves Actions minutes.
+  schedule:
+    - cron: "23 8 * * 0"
+  # Runs when the finder changes on a work branch, so changes get checked on real websites.
+  push:
+    branches-ignore: [main, "results/**"]
+    paths:
+      - "find_boards.py"
+      - "tests/**"
+      - ".github/workflows/find-boards.yml"
+  # A pull request runs only the tests.
+  pull_request:
+    paths:
+      - "find_boards.py"
+      - "tests/**"
+      - ".github/workflows/find-boards.yml"
+
+permissions:
+  contents: write
+
+# One run at a time per branch, so two runs never save results at once.
+concurrency:
+  group: find-boards-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+  find:
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # The finder stops itself at --max-minutes; this is a safety net 30 minutes past that.
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Get the input file (orgs.csv) and the progress file (boards.csv) from results branches.
+      # Order of preference: this branch's own results, then main's, then any other results
+      # branch (newest first in GitHub's list), so a new branch still starts from real data.
+      - name: Restore orgs.csv and earlier progress
+        run: |
+          restore() {   # restore <file> <results prefix>
+            local file="$1" prefix="$2" b
+            for b in "${prefix}-${GITHUB_REF_NAME}" "${prefix}-main" \
+                     $(git ls-remote --heads origin "${prefix}-*" | awk '{print $2}' | sed 's#refs/heads/##'); do
+              if git fetch -q --depth=1 origin "$b" 2>/dev/null \
+                 && git show "FETCH_HEAD:$file" > "/tmp/$file" 2>/dev/null; then
+                mv "/tmp/$file" "$file"
+                echo "Restored $file from $b"
+                return 0
+              fi
+            done
+            echo "No $file found on any ${prefix}-* branch"
+            return 1
+          }
+          # orgs.csv is required; boards.csv is optional (absent on the very first run).
+          restore orgs.csv results/orgs
+          restore boards.csv results/boards || true
+
+      # Push runs on work branches are tests of a change, so they stop after 45 minutes.
+      # Scheduled and button runs use the max_minutes box (240 by default).
+      - name: Find job boards
+        env:
+          TIERS: ${{ github.event.inputs.tiers }}
+          MAX_MINUTES: ${{ github.event.inputs.max_minutes }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set +e
+          if [ "$EVENT" = "push" ]; then MAX_MINUTES=45; fi
+          ARGS=(--max-minutes "${MAX_MINUTES:-240}")
+          if [ -n "$TIERS" ]; then ARGS+=(--tiers "$TIERS"); fi
+          python -u find_boards.py "${ARGS[@]}" 2>&1 | tee find_summary.txt
+          echo "${PIPESTATUS[0]}" > exit_code.txt
+
+      - name: Write the run summary
+        if: always()
+        run: |
+          echo '### Job board finder' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -30 find_summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no summary)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Save boards.csv and the log to results/boards-<branch>, even after a failure.
+      - name: Push the result to a side branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RESULTS_BRANCH="results/boards-${GITHUB_REF_NAME}"
+          OUT="$(mktemp -d)"
+          for f in boards.csv find_summary.txt exit_code.txt; do
+            if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
+          done
+          cd "$OUT"
+          git init -q -b "$RESULTS_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Job boards from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RESULTS_BRANCH"
+
+      - name: Report the finder's result
+        if: always()
+        run: |
+          CODE="$(cat exit_code.txt 2>/dev/null || echo 1)"
+          echo "Finder exit code: $CODE"
+          exit "$CODE"

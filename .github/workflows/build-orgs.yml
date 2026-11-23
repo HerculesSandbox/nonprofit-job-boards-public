@@ -1,0 +1,167 @@
+# Builds orgs.csv, the master list of nonprofit and philanthropic organizations (build_orgs.py).
+# Runs on GitHub's computers because the IRS site isn't reachable from Claude's network.
+# It never changes main: the new orgs.csv goes to a side branch named results/orgs-<branch>,
+# where you can open or download it. Copying it onto main is a separate, reviewed step.
+
+# The name shown in the repo's Actions tab.
+name: Build organization list
+
+# "on" lists the events that start a run.
+on:
+  # A "Run workflow" button in the Actions tab (it appears once this file is on main).
+  # The two boxes let you do a quick test run without editing any code.
+  workflow_dispatch:
+    inputs:
+      states:
+        description: "Two-letter state codes, comma-separated (e.g. TX). Leave blank for the whole U.S."
+        required: false
+        default: ""
+      max_zips:
+        description: "Stop after this many return ZIPs (for a quick test). Leave blank to read them all."
+        required: false
+        default: ""
+  # Runs when the builder changes, on any branch including main (after a merge), so the
+  # results branch always matches the code. Work branches save to results/orgs-<branch>.
+  push:
+    branches-ignore: ["results/**"]
+    paths:
+      - "build_orgs.py"
+      - ".github/workflows/build-orgs.yml"
+  # Monthly, on the 1st at 07:41 UTC (1:41 AM US Central time in winter), to pick up new IRS data.
+  schedule:
+    - cron: "41 7 1 * *"
+  # A pull request runs only the tests, so the PR page shows a green or red check before you merge.
+  pull_request:
+    paths:
+      - "build_orgs.py"
+      - "tests/**"
+      - ".github/workflows/build-orgs.yml"
+
+# Needed to push the side branch with the results.
+permissions:
+  contents: write
+
+# A second run on the same branch waits for the first, so two runs never save results at once.
+concurrency:
+  group: build-orgs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Job 1: the automated tests, using sample data only.
+  tests:
+    runs-on: ubuntu-latest
+    # The tests take under a second; 5 minutes is a generous safety limit.
+    timeout-minutes: 5
+    steps:
+      # Copy the repo onto GitHub's fresh computer.
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      # Same Python version the build uses. (Python 3.8 can't be installed on GitHub's current
+      # Linux computers, so 3.8 compatibility is kept by sticking to features 3.8 has.)
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # "discover -s tests" finds every test_*.py file in the tests folder and runs it.
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+  # Job 2: the real build, on real IRS data.
+  build:
+    # Wait for the tests, and run only if they passed.
+    needs: tests
+    # Skip on pull requests: those are only a check, and can't save results.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # The first full build downloads a few dozen large ZIPs of tax returns. Later builds reuse
+    # the cache and are much faster. 300 minutes stays under GitHub's 6-hour limit.
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Bring back the return cache from the last build on this branch (or main's, for a new
+      # branch), so each build only reads returns it hasn't read before.
+      - name: Restore the return cache
+        run: |
+          # This branch's results first, then main's, then any other results/orgs-* branch.
+          for b in "results/orgs-${GITHUB_REF_NAME}" "results/orgs-main" \
+                   $(git ls-remote --heads origin "results/orgs-*" | awk '{print $2}' | sed 's#refs/heads/##'); do
+            # Fetch into a temporary file, so a failed fetch never leaves a broken cache.
+            if git fetch -q --depth=1 origin "$b" 2>/dev/null \
+               && git show FETCH_HEAD:return_cache.csv.gz > /tmp/cache.csv.gz 2>/dev/null; then
+              mv /tmp/cache.csv.gz return_cache.csv.gz
+              echo "Restored the return cache from $b"
+              break
+            fi
+          done
+
+      # Run the builder. The two inputs are only filled in when you use the Run workflow button.
+      # "2>&1" sends error messages into the same output as normal messages, and "tee" both
+      # shows that output live and saves it to build_summary.txt, so the log is kept even on a
+      # failure. "python -u" prints each line immediately instead of holding it in a buffer.
+      # PIPESTATUS[0] is the builder's own exit code (0 = success); we save it and report it
+      # at the very end, after the log has been pushed.
+      - name: Build the organization list
+        env:
+          # Names to leave off the list, from the repository secret (blank if it isn't set).
+          EXCLUDE_NAMES: ${{ secrets.EXCLUDE_NAMES }}
+          STATES: ${{ github.event.inputs.states }}
+          MAX_ZIPS: ${{ github.event.inputs.max_zips }}
+        run: |
+          # GitHub stops a step at the first failing command; "set +e" turns that off here so
+          # the exit code still gets saved when the builder fails.
+          set +e
+          ARGS=()
+          if [ -n "$STATES" ]; then ARGS+=(--states "$STATES"); fi
+          if [ -n "$MAX_ZIPS" ]; then ARGS+=(--max-zips "$MAX_ZIPS"); fi
+          python -u build_orgs.py "${ARGS[@]}" 2>&1 | tee build_summary.txt
+          echo "${PIPESTATUS[0]}" > exit_code.txt
+
+      # Show the summary on the run's page in the Actions tab.
+      - name: Write the run summary
+        if: always()
+        run: |
+          echo '### Organization list build' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat build_summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no summary)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Push orgs.csv, the cache and the summary to results/orgs-<branch>.
+      # "if: always()" runs this even when the build failed, so the log still gets saved.
+      - name: Push the result to a side branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RESULTS_BRANCH="results/orgs-${GITHUB_REF_NAME}"
+          OUT="$(mktemp -d)"
+          # Copy whichever outputs exist; after a failure there may be only the log.
+          for f in orgs.csv build_summary.txt return_cache.csv.gz exit_code.txt; do
+            if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
+          done
+          cd "$OUT"
+          git init -q -b "$RESULTS_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Organization list built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RESULTS_BRANCH"
+
+      # Last step: mark the run failed (red) if the builder failed, now that its log is saved.
+      - name: Report the builder's result
+        if: always()
+        run: |
+          CODE="$(cat exit_code.txt 2>/dev/null || echo 1)"
+          echo "Builder exit code: $CODE"
+          exit "$CODE"
