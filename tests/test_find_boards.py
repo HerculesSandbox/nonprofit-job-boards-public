@@ -151,6 +151,24 @@ class FullRunTest(unittest.TestCase):
         # Everything was checked today, so nothing is checked again.
         self.assertIn("to check now: 0", printed)
 
+    def test_stuck_website_times_out(self):
+        # GAMMA's website never answers: its check blocks until the test ends.
+        release = fb.threading.Event()
+        real_check = fb.check_org
+
+        def slow_check(org):
+            if org["name"] == "GAMMA":
+                release.wait(10)
+            return real_check(org)
+
+        self.addCleanup(release.set)
+        with mock.patch.object(fb, "check_org", slow_check):
+            rows, _ = self.run_main("--org-timeout", "1")
+        # GAMMA is recorded as timed out; everyone else finished normally.
+        self.assertEqual(rows["GAMMA"]["ats_platform"], "error")
+        self.assertIn("timed out", rows["GAMMA"]["error"])
+        self.assertEqual(rows["ALPHA"]["ats_platform"], "paylocity")
+
     def test_tiers_and_limit(self):
         rows, _ = self.run_main("--tiers", "A", "--limit", "2")
         # Only the two biggest tier-A organizations (by revenue) were checked.
