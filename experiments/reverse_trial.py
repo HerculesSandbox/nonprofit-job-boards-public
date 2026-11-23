@@ -26,6 +26,8 @@ import argparse
 import collections
 # concurrent.futures visits many boards at once on separate threads.
 import concurrent.futures
+# gzip unpacks the index slices, which are stored compressed.
+import gzip
 import csv
 # difflib.SequenceMatcher scores how similar two strings are, from 0.0 to 1.0.
 import difflib
@@ -51,25 +53,29 @@ import find_boards as fb  # noqa: E402
 # SETTINGS
 # ---------------------------------------------------------------------------
 
-# Common Crawl's list of crawls, newest first, each with the address of its index server.
+# Common Crawl's list of crawls, newest first.
 COLLINFO_URL = "https://index.commoncrawl.org/collinfo.json"
+
+# Common Crawl's download server, which serves the raw index files. We read those directly,
+# because the search server (index.commoncrawl.org) times out under load.
+DATA_URL = "https://data.commoncrawl.org/cc-index/collections/{crawl}/indexes/{file}"
 
 # How many of the newest crawls to search. Each crawl covers a different slice of the web,
 # so two crawls find more boards than one.
 CRAWLS_TO_SEARCH = 3
 
-# What to ask each crawl's index for, per hiring system (keys match find_boards' ATS names):
-#   url:       the address to look up.
-#   matchType: "prefix" = any address starting with url; "domain" = any address on that
-#              domain or its subdomains.
-#   filter:    optional; "~url:<pattern>" keeps only addresses matching a regular expression.
+# What to look for, per hiring system (keys match find_boards' ATS names):
+#   surt: the start of the address in "SURT" form, the reversed-domain order Common Crawl sorts
+#         its index by (www.example.com/jobs -> "com,example,www)/jobs"). Every address starting
+#         with this sits together in the index, so we only read that slice.
+#   keep: a regular expression the address must also match.
 SYSTEMS = {
-    "paylocity": {"url": "recruiting.paylocity.com/recruiting/jobs/all/", "matchType": "prefix"},
-    "bamboohr": {"url": "bamboohr.com", "matchType": "domain", "filter": "~url:.*\\.bamboohr\\.com/careers.*"},
+    "paylocity": {"surt": "com,paylocity,recruiting)/recruiting/jobs/all/", "keep": r"/recruiting/jobs/all/"},
+    "bamboohr": {"surt": "com,bamboohr,", "keep": r"\.bamboohr\.com/careers"},
 }
 
-# Most index pages to read per crawl and system (each page holds up to a few thousand addresses).
-MAX_INDEX_PAGES = 30
+# Most index slices ("blocks", about 3,000 addresses each) to read per crawl and system.
+MAX_BLOCKS = 300
 
 # Most boards per system to visit for their names (keeps the trial under an hour).
 MAX_BOARDS_TO_VISIT = 3000
@@ -88,56 +94,71 @@ MATCH_THRESHOLD = 0.92
 # COMMON CRAWL INDEX
 # ---------------------------------------------------------------------------
 
-def get_json_lines(url: str, tries: int = 5) -> List[dict]:
-    """Fetch a URL whose response is one JSON object per line. Retries, since the index is busy."""
-    for attempt in range(1, tries + 1):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": fb.USER_AGENT})
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                text = resp.read().decode("utf-8", errors="replace")
-            # Each non-blank line is one JSON record.
-            return [json.loads(line) for line in text.splitlines() if line.strip()]
-        except urllib.error.HTTPError as err:
-            # 404 here means "no results for this page", which is a normal answer.
-            if err.code == 404:
-                return []
-            if attempt == tries:
-                raise
-        except (urllib.error.URLError, OSError, ValueError):
-            if attempt == tries:
-                raise
-        # The index times out (HTTP 504) when busy; wait 30 seconds and try again.
-        print(f"      busy; retry {attempt} of {tries - 1} in 30s", file=sys.stderr)
-        time.sleep(30)
-    return []
-
-
 def newest_crawls(n: int) -> List[Dict[str, str]]:
-    """The n most recent crawls, as {"id", "cdx-api"} dicts."""
+    """The n most recent crawls, as {"id", ...} dicts."""
     req = urllib.request.Request(COLLINFO_URL, headers={"User-Agent": fb.USER_AGENT})
     with urllib.request.urlopen(req, timeout=60) as resp:
         crawls = json.loads(resp.read().decode("utf-8"))
     return crawls[:n]
 
 
-def index_addresses(api: str, pattern: Dict[str, str], max_pages: int) -> Iterator[str]:
+def find_blocks(crawl: str, prefixes: Dict[str, str]) -> Dict[str, List[Tuple[str, int, int]]]:
     """
-    Yield every address in one crawl's index that matches `pattern`, page by page.
-    Doesn't ask for the page count first (that query times out on a busy server); it just reads
-    page 0, 1, 2... until a page comes back empty.
+    Read a crawl's table of contents (cluster.idx) and return, for each system, the index blocks
+    that may hold addresses starting with its SURT prefix: {system: [(file, offset, length), ...]}.
+
+    Each line of cluster.idx is the first address of one block, then its file, byte offset and
+    length. The lines are in sorted order, so a block can hold our addresses only if it starts
+    before the end of our prefix range and the next block starts after its beginning.
     """
-    base = {"url": pattern["url"], "matchType": pattern["matchType"], "output": "json", "fl": "url"}
-    if pattern.get("filter"):
-        base["filter"] = pattern["filter"]
-    for page in range(max_pages):
-        records = get_json_lines(api + "?" + urllib.parse.urlencode(dict(base, page=page)))
-        print(f"    page {page}: {len(records)} addresses")
-        if not records:
+    url = DATA_URL.format(crawl=crawl, file="cluster.idx")
+    req = urllib.request.Request(url, headers={"User-Agent": fb.USER_AGENT})
+    blocks: Dict[str, List[Tuple[str, int, int]]] = {name: [] for name in prefixes}
+    previous = None  # (first address, file, offset, length) of the block before this line
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        # Read the file line by line as it downloads, never holding all of it in memory.
+        for raw in resp:
+            parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            # The first field is "<address> <timestamp>"; we only need the address.
+            key = parts[0].split(" ")[0]
+            current = (key, parts[1], int(parts[2]), int(parts[3]))
+            if previous is not None:
+                for name, prefix in prefixes.items():
+                    # "\uffff" sorts after every character, so prefix + it marks the range's end.
+                    if previous[0] <= prefix + "\uffff" and key >= prefix and len(blocks[name]) < MAX_BLOCKS:
+                        blocks[name].append(previous[1:])
+            previous = current
+    return blocks
+
+
+def read_block(crawl: str, block: Tuple[str, int, int], tries: int = 3) -> List[str]:
+    """Download one index block with a range request, unpack it, and return its addresses."""
+    file, offset, length = block
+    url = DATA_URL.format(crawl=crawl, file=file)
+    for attempt in range(1, tries + 1):
+        try:
+            # "Range: bytes=A-B" asks for just those bytes of the file.
+            req = urllib.request.Request(url, headers={"User-Agent": fb.USER_AGENT,
+                                                       "Range": f"bytes={offset}-{offset + length - 1}"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                text = gzip.decompress(resp.read()).decode("utf-8", errors="replace")
             break
-        for record in records:
-            yield record.get("url", "")
-        # Be polite to a free service.
-        time.sleep(2)
+        except (urllib.error.URLError, OSError, EOFError):
+            if attempt == tries:
+                return []
+            time.sleep(10 * attempt)
+    addresses = []
+    for line in text.splitlines():
+        # Each line is "<surt> <timestamp> {json}"; the JSON holds the real address.
+        brace = line.find("{")
+        if brace != -1:
+            try:
+                addresses.append(json.loads(line[brace:]).get("url", ""))
+            except ValueError:
+                continue
+    return addresses
 
 
 # ---------------------------------------------------------------------------
@@ -241,22 +262,36 @@ def main(argv: Optional[List[str]] = None) -> int:
     matcher = OrgMatcher(orgs)
     crawls = newest_crawls(CRAWLS_TO_SEARCH)
     print("Crawls searched: " + ", ".join(c["id"] for c in crawls))
+    # For each crawl, which index blocks to read for each system (one pass over cluster.idx).
+    blocks_by_crawl: Dict[str, Dict[str, List[Tuple[str, int, int]]]] = {}
+    for crawl in crawls:
+        try:
+            blocks_by_crawl[crawl["id"]] = find_blocks(crawl["id"], {k: v["surt"] for k, v in SYSTEMS.items()})
+            print(f"  {crawl['id']}: " + ", ".join(f"{k} {len(v)} blocks" for k, v in blocks_by_crawl[crawl["id"]].items()))
+        except (urllib.error.URLError, OSError) as err:
+            print(f"  {crawl['id']}: couldn't read cluster.idx: {err}", file=sys.stderr)
 
     out_rows: List[Dict[str, str]] = []
     summary: List[str] = []
     for system, pattern in SYSTEMS.items():
         print(f"\n{system}: searching the index")
         boards: Dict[str, str] = {}
-        for crawl in crawls:
-            print(f"  {crawl['id']}")
-            try:
-                for address in index_addresses(crawl["cdx-api"], pattern, MAX_INDEX_PAGES):
+        for crawl_id, by_system in blocks_by_crawl.items():
+            blocks = by_system.get(system, [])
+            # Read the blocks 8 at a time; each is a small download.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                lists = list(pool.map(lambda b: read_block(crawl_id, b), blocks))
+            seen = 0
+            for addresses in lists:
+                for address in addresses:
+                    if not re.search(pattern["keep"], address, flags=re.IGNORECASE):
+                        continue
+                    seen += 1
                     # Reuse find_boards' patterns to turn each address into a clean board URL.
                     found = fb.detect_ats(address)
                     if found and found["ats_platform"] == system and found["board_url"]:
                         boards[found["board_url"].lower()] = found["board_url"]
-            except (urllib.error.URLError, OSError, ValueError) as err:
-                print(f"    index search failed: {err}", file=sys.stderr)
+            print(f"  {crawl_id}: {len(blocks)} blocks, {seen} matching addresses")
         print(f"  distinct boards in Common Crawl: {len(boards)}")
         to_visit = list(boards.values())[:MAX_BOARDS_TO_VISIT]
         print(f"  visiting {len(to_visit)} boards for their names")
