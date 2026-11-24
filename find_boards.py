@@ -652,9 +652,11 @@ def timed_out_row(org: Dict[str, str], seconds: float) -> Dict[str, str]:
 
 
 def run_checks(todo: List[Dict[str, str]], workers: int, org_deadline: float,
-               stop_at: Optional[float], on_result) -> int:
+               stop_at: Optional[float], on_result, check=None, timeout_row=None) -> int:
     """
     Check every organization in `todo`, `workers` at a time, calling on_result(row) for each.
+    `check` is the function that checks one organization (check_org unless another is given;
+    find_websites.py passes its own), and `timeout_row` makes the row for one that ran too long.
     An organization that takes longer than `org_deadline` seconds is recorded as timed out and
     left behind; its thread is a "daemon" thread, which Python doesn't wait for when the script
     ends, so a stuck website can never keep the run going. No new checks start after `stop_at`
@@ -667,10 +669,13 @@ def run_checks(todo: List[Dict[str, str]], workers: int, org_deadline: float,
     # Organizations being checked right now: EIN -> (start time, organization).
     in_flight: Dict[str, Tuple[float, Dict[str, str]]] = {}
     finished = 0
+    # Use the finder's own functions unless the caller gave others.
+    check = check or check_org
+    timeout_row = timeout_row or timed_out_row
 
     def worker(org: Dict[str, str]) -> None:
         # Runs on its own thread: check one organization and hand back the row.
-        done.put(check_org(org))
+        done.put(check(org))
 
     while True:
         time_up = stop_at is not None and time.monotonic() > stop_at
@@ -697,7 +702,7 @@ def run_checks(todo: List[Dict[str, str]], workers: int, org_deadline: float,
         for ein, (began, org) in list(in_flight.items()):
             if now - began > org_deadline:
                 del in_flight[ein]
-                on_result(timed_out_row(org, now - began))
+                on_result(timeout_row(org, now - began))
                 finished += 1
     return finished
 
@@ -743,6 +748,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Find each organization's job board.")
     parser.add_argument("--orgs", default=os.path.join(HERE, "orgs.csv"), help="Input: orgs.csv from stage 1.")
     parser.add_argument("--out", default=os.path.join(HERE, "boards.csv"), help="Output (and progress file).")
+    parser.add_argument("--websites", default=os.path.join(HERE, "websites.csv"),
+                        help="Optional: websites.csv from find_websites.py, for orgs with no website in orgs.csv.")
     parser.add_argument("--tiers", default="", help="Comma-separated tiers to check, e.g. A,B. Default: all.")
     parser.add_argument("--limit", type=int, default=None, help="Check at most this many organizations.")
     parser.add_argument("--max-minutes", type=float, default=None, help="Stop and save after this many minutes.")
@@ -759,6 +766,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Earlier results, keyed by EIN, so reruns continue where the last one stopped.
     results = {r["ein"]: r for r in read_csv(args.out)}
     orgs = [o for o in read_csv(args.orgs) if o.get("size_tier") in tiers]
+    # Fill in websites that find_websites.py found for organizations whose returns had none.
+    # read_csv returns an empty list if the file doesn't exist, so this step is optional.
+    found = {w["ein"]: w["website"] for w in read_csv(args.websites) if w.get("website")}
+    filled = 0
+    for o in orgs:
+        if not o.get("website") and o["ein"] in found:
+            o["website"] = found[o["ein"]]
+            filled += 1
+    if filled:
+        print(f"Websites filled in from {os.path.basename(args.websites)}: {filled}")
     # Biggest tiers first; within a tier, biggest revenue first.
     order = {t: i for i, t in enumerate(TIER_ORDER)}
     orgs.sort(key=lambda o: (order.get(o["size_tier"], 9), -int(o.get("revenue") or 0)))

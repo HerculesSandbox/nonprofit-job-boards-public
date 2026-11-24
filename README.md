@@ -47,6 +47,23 @@ Tests (sample data, no internet):
 python3 -m unittest discover -s tests -v
 ```
 
+## Stage 1b: `find_websites.py`
+
+For U.S. organizations whose tax returns listed no website:
+
+1. **Wikidata**, the free database behind Wikipedia: one query returns every organization recorded
+   there with both a tax ID (EIN) and an official website.
+2. **Domain guesses** from the name, such as `springfieldfoodbank.org`, `springfield-food-bank.org`,
+   then `.com`. A guess counts only if the site's title or main heading names the organization,
+   and for one- or two-word names the page also gives its city or ZIP code. Parked and for-sale
+   domains are rejected.
+
+**Output: `websites.csv`**: the website found (or blank) and its source for each organization.
+The job-board finder uses these websites when `orgs.csv` has none.
+
+Runs daily at 05:47 UTC and from the **Find websites** button in the Actions tab. Organizations with
+nothing found are tried again after 90 days. Results land on the branch `results/websites-main`.
+
 ## Stage 2: `find_boards.py`
 
 For each organization in `orgs.csv` with a website, biggest tiers first:

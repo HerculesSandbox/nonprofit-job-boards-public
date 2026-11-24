@@ -1,0 +1,150 @@
+# Finds websites for organizations whose tax returns listed none (find_websites.py) and saves
+# websites.csv. Reads orgs.csv from the stage 1 results branch; writes to results/websites-<branch>.
+# The daily job-board crawl (find-boards.yml) reads websites.csv from results/websites-main.
+
+name: Find websites
+
+on:
+  # The "Run workflow" button.
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: "Stop starting new guesses after this many minutes."
+        required: false
+        default: "150"
+  # Daily at 05:47 UTC (11:47 PM US Central time in winter), finishing before the job-board
+  # crawl starts at 08:23 UTC, so the crawl gets the newest websites.
+  schedule:
+    - cron: "47 5 * * *"
+  # Runs when this stage changes on a work branch, as a 20-minute test on real websites.
+  push:
+    branches-ignore: [main, "results/**"]
+    paths:
+      - "find_websites.py"
+      - "tests/test_find_websites.py"
+      - ".github/workflows/find-websites.yml"
+  # A pull request runs only the tests.
+  pull_request:
+    paths:
+      - "find_websites.py"
+      - "find_boards.py"
+      - "tests/**"
+      - ".github/workflows/find-websites.yml"
+
+# Lets the run push its results branch.
+permissions:
+  contents: write
+
+# One run at a time per branch; a newer run cancels an older one still going.
+concurrency:
+  group: find-websites-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+  find:
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # The script stops starting guesses at --max-minutes; this is a safety net past that.
+    timeout-minutes: 200
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # orgs.csv from stage 1, and earlier progress (websites.csv) if there is any.
+      # Order of preference: this branch's own results, then main's, then any other branch's.
+      - name: Restore orgs.csv and earlier progress
+        id: restore
+        run: |
+          restore() {   # restore <file> <results prefix>
+            local file="$1" prefix="$2" b
+            for b in "${prefix}-${GITHUB_REF_NAME}" "${prefix}-main" \
+                     $(git ls-remote --heads origin "${prefix}-*" | awk '{print $2}' | sed 's#refs/heads/##'); do
+              if git fetch -q --depth=1 origin "$b" 2>/dev/null \
+                 && git show "FETCH_HEAD:$file" > "/tmp/$file" 2>/dev/null; then
+                mv "/tmp/$file" "$file"
+                echo "Restored $file from $b"
+                return 0
+              fi
+            done
+            echo "No $file found on any ${prefix}-* branch"
+            return 1
+          }
+          restore orgs.csv results/orgs
+          restore websites.csv results/websites || true
+
+      # Push runs on work branches are tests of a change, so they stop after 20 minutes.
+      - name: Find websites
+        id: find
+        env:
+          MAX_MINUTES: ${{ github.event.inputs.max_minutes }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set +e
+          if [ "$EVENT" = "push" ]; then MAX_MINUTES=20; fi
+          # "timeout" kills the script if it runs 15 minutes past its own limit (the Wikidata
+          # lookup and the last guesses come on top of it), so results are always saved.
+          LIMIT=$(( ${MAX_MINUTES:-150} + 15 ))
+          timeout "${LIMIT}m" python -u find_websites.py --max-minutes "${MAX_MINUTES:-150}" 2>&1 | tee websites_summary.txt
+          echo "${PIPESTATUS[0]}" > exit_code.txt
+
+      - name: Write the run summary
+        if: always()
+        run: |
+          echo '### Website finder' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -20 websites_summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no summary)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Save websites.csv and the log to results/websites-<branch>, even after a failure.
+      - name: Push the result to a side branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RESULTS_BRANCH="results/websites-${GITHUB_REF_NAME}"
+          OUT="$(mktemp -d)"
+          {
+            echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "restore step: ${{ steps.restore.outcome }}"
+            echo "find step: ${{ steps.find.outcome }}"
+            echo "finished: $(date -u)"
+          } > "$OUT/run_info.txt"
+          for f in websites.csv websites_summary.txt exit_code.txt; do
+            if [ -f "$f" ]; then cp "$f" "$OUT"/; fi
+          done
+          cd "$OUT"
+          git init -q -b "$RESULTS_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Websites from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RESULTS_BRANCH"
+
+      - name: Report the script's result
+        if: always()
+        run: |
+          CODE="$(cat exit_code.txt 2>/dev/null || echo 1)"
+          echo "Website finder exit code: $CODE"
+          exit "$CODE"
