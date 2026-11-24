@@ -36,6 +36,8 @@ import csv
 import datetime
 # html turns "&amp;" style escapes in links back into normal characters.
 import html
+# http.cookiejar keeps the cookies a site sets while redirecting us (see fetch_page).
+import http.cookiejar
 # html.parser walks a page's tags to collect its links.
 from html.parser import HTMLParser
 # os builds file paths and checks whether boards.csv exists.
@@ -266,7 +268,12 @@ def fetch_page(url: str, verify: bool = True) -> Tuple[str, str]:
     # An "SSL context" holds the security settings for https. None means Python's normal,
     # fully checked settings; the unverified one accepts any certificate.
     context = None if verify else ssl._create_unverified_context()
-    with urllib.request.urlopen(req, timeout=TIMEOUT, context=context) as resp:
+    # An "opener" is urllib's page fetcher, built from handlers. This one keeps cookies for the
+    # length of one page fetch: some sites (big health systems especially) set a cookie and
+    # redirect, and without the cookie they redirect forever ("HTTP Error 302 ... redirect error").
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+                                         urllib.request.HTTPSHandler(context=context))
+    with opener.open(req, timeout=TIMEOUT) as resp:
         chunks: List[bytes] = []
         size = 0
         # Read in 64 KB pieces, stopping at MAX_PAGE_BYTES (giant pages are almost never careers
