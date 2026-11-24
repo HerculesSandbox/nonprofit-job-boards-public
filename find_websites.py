@@ -60,7 +60,7 @@ import find_boards as fb
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Bump this when the guessing rules change, so every organization is guessed again.
-WEBSITES_VERSION = "2"
+WEBSITES_VERSION = "3"
 
 # Look again at organizations we found nothing for after this many days.
 RECHECK_DAYS = 90
@@ -100,8 +100,14 @@ LEGAL_ENDINGS = {"inc", "incorporated", "corp", "corporation", "co", "company", 
 SMALL_WORDS = {"of", "the", "and", "for", "in", "at", "a", "an", "on", "to"}
 # Words that don't tell organizations apart: "Johnson Family Foundation" has one telling word,
 # "johnson". They still have to appear on the page, but don't count toward MIN_TELLING_WORDS.
-GENERIC_WORDS = {"family", "foundation", "foundations", "fund", "trust", "charitable", "charity",
-                 "charities", "memorial"}
+GENERIC_WORDS = {
+    "family", "foundation", "foundations", "fund", "trust", "charitable", "charity", "charities",
+    "memorial", "community", "communities", "center", "centers", "centre", "services", "service",
+    "resource", "resources", "development", "health", "healthcare", "care", "home", "homes",
+    "housing", "senior", "seniors", "children", "childrens", "youth", "education", "educational",
+    "school", "academy", "institute", "association", "society", "program", "programs", "council",
+    "group", "network", "alliance", "partnership", "coalition", "league", "club", "project",
+    "providers", "systems", "system", "american", "national", "international", "united", "greater"}
 # A name with at least this many telling words is distinctive enough on its own; shorter names
 # also need the page to mention the organization's city or ZIP code.
 MIN_TELLING_WORDS = 3
@@ -276,16 +282,27 @@ def page_names_org(page: str, org: Dict[str, str], domain: str) -> str:
     return "name" if len(telling) >= MIN_TELLING_WORDS else ""
 
 
+def hostname(url: str) -> str:
+    """
+    The host of an address, lowercased and without a port: "https://WWW.x.org:443/a" -> "www.x.org".
+    Empty for an address too malformed to read (urllib raises ValueError on some, like "http://[x").
+    """
+    try:
+        # An address with no "//" (like "x.org/a") gets one, so urllib sees "x.org" as the host.
+        return urllib.parse.urlsplit(url if "//" in url else "//" + url).hostname or ""
+    except ValueError:
+        return ""
+
+
 def home_address(url: str) -> str:
     """Just the scheme and host of an address: "https://www.x.org:443/home" -> "https://www.x.org"."""
-    parts = urllib.parse.urlsplit(url)
-    # .hostname drops a port number (":443") and lowercases the host.
-    return f"{parts.scheme}://{parts.hostname or ''}"
+    scheme = "http" if url.lower().startswith("http://") else "https"
+    return f"{scheme}://{hostname(url)}"
 
 
 def host_key(url: str) -> str:
     """A website's host without "www.", for telling whether two addresses are the same site."""
-    host = urllib.parse.urlsplit(url if "//" in url else "//" + url).hostname or ""
+    host = hostname(url)
     return host[4:] if host.startswith("www.") else host
 
 
@@ -302,7 +319,7 @@ def guess_website(org: Dict[str, str]) -> Dict[str, str]:
             # Most guesses don't exist at all; that fails quickly.
             continue
         # A guess that forwards to a directory or social-media page isn't the organization's site.
-        if BLOCKED_HOSTS.search(urllib.parse.urlsplit(final_url).hostname or ""):
+        if BLOCKED_HOSTS.search(hostname(final_url)):
             continue
         evidence = page_names_org(page, org, domain)
         if evidence:

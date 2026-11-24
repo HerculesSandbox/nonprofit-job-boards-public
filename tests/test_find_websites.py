@@ -31,7 +31,8 @@ SITES = {
     # A real site with the same name, in another city (two main words, so the city must match).
     "https://riverhouse.org": "<title>River House</title><p>Visit us in Portland, OR</p>",
     # A site found only under .com, with hyphens.
-    "https://www.lakeside-arts-education-council.com": "<h1>Lakeside Arts &amp; Education Council</h1>",
+    "https://www.lakeside-arts-education-council.com": "<h1>Lakeside Arts &amp; Education Council</h1>"
+                                                       "<p>Springfield</p>",
     # A family foundation's site with no city: "family" and "foundation" don't tell orgs apart.
     "https://examplefamilyfoundation.org": "<title>Example Family Foundation</title>",
     # A guessed domain that forwards to the organization's page on a directory site.
@@ -95,9 +96,8 @@ class GuessTests(unittest.TestCase):
         self.assertEqual(found["000000002"]["website"], "")
         # Same short name in another city: rejected.
         self.assertEqual(found["000000003"]["website"], "")
-        # Four telling words, so no city needed; found under .com with hyphens and www.
+        # Found under .com, with hyphens and www.
         self.assertEqual(found["000000004"]["website"], "https://www.lakeside-arts-education-council.com")
-        self.assertEqual(found["000000004"]["evidence"], "name")
         self.assertEqual(found["000000001"]["evidence"], "name+place")
 
     def test_generic_names_need_a_place(self):
@@ -109,6 +109,19 @@ class GuessTests(unittest.TestCase):
         org = dict(ORGS[0], ein="000000011", name="SPRINGFIELD SENIOR CENTER")
         with mock.patch.object(fb, "fetch_home", fake_fetch_home):
             self.assertEqual(fw.guess_website(org)["website"], "")
+
+    def test_distinctive_names_match_without_a_place(self):
+        org = {"name": "RONALD & JOYCE WANEK FOUNDATION", "city": "SPRINGFIELD", "zip": "62701"}
+        page = "<title>The Ronald and Joyce Wanek Foundation</title>"
+        # Three telling words (ronald, joyce, wanek): the name alone is enough.
+        self.assertEqual(fw.page_names_org(page, org, "ronaldjoycewanekfoundation.org"), "name")
+        # "Community Resource Center" is all generic words: it needs the city.
+        org = {"name": "COMMUNITY RESOURCE CENTER INC", "city": "SPRINGFIELD", "zip": "62701"}
+        self.assertEqual(fw.page_names_org("<h1>Community Resource Center</h1>", org, "x.org"), "")
+
+    def test_malformed_addresses(self):
+        self.assertEqual(fw.host_key("http://[not-a-host"), "")
+        self.assertEqual(fw.home_address("https://WWW.Example.org:443/home"), "https://www.example.org")
 
     def test_middle_initials_only(self):
         self.assertIn("henrytippiefoundation.org", fw.domain_guesses("HENRY B TIPPIE FOUNDATION"))
