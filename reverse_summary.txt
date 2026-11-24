@@ -1,0 +1,65 @@
+Crawls: CC-MAIN-2026-47, CC-MAIN-2026-43, CC-MAIN-2026-39
+  CC-MAIN-2026-47 paylocity: 2 blocks, 3409 new boards
+  CC-MAIN-2026-47 adp: 3 blocks, 2096 new boards
+  CC-MAIN-2026-47 paycom: 1 blocks, 0 new boards
+  CC-MAIN-2026-47 ukg: 4 blocks, 2355 new boards
+  CC-MAIN-2026-47 workday: 28 blocks, 3142 new boards
+  CC-MAIN-2026-47 icims: 16 blocks, 2741 new boards
+  CC-MAIN-2026-47 bamboohr: 4 blocks, 3454 new boards
+  CC-MAIN-2026-47 applicantpro: 2 blocks, 373 new boards
+  CC-MAIN-2026-47 jazzhr: 1 blocks, 68 new boards
+  CC-MAIN-2026-47 isolved: 2 blocks, 263 new boards
+  CC-MAIN-2026-47 dayforce: 5 blocks, 1941 new boards
+  CC-MAIN-2026-47 paycor: 1 blocks, 0 new boards
+  CC-MAIN-2026-47 greenhouse: 28 blocks, 4281 new boards
+  CC-MAIN-2026-47 lever: 1 blocks, 1 new boards
+  CC-MAIN-2026-47 ashby: 3 blocks, 1118 new boards
+  CC-MAIN-2026-43 paylocity: 2 blocks, 2706 new boards
+  CC-MAIN-2026-43 adp: 3 blocks, 1479 new boards
+  CC-MAIN-2026-43 paycom: 1 blocks, 0 new boards
+  CC-MAIN-2026-43 ukg: 6 blocks, 1073 new boards
+  CC-MAIN-2026-43 workday: 27 blocks, 1108 new boards
+  CC-MAIN-2026-43 icims: 16 blocks, 834 new boards
+  CC-MAIN-2026-43 bamboohr: 4 blocks, 1676 new boards
+  CC-MAIN-2026-43 applicantpro: 1 blocks, 259 new boards
+  CC-MAIN-2026-43 jazzhr: 2 blocks, 48 new boards
+  CC-MAIN-2026-43 isolved: 1 blocks, 177 new boards
+  CC-MAIN-2026-43 dayforce: 3 blocks, 239 new boards
+  CC-MAIN-2026-43 paycor: 1 blocks, 0 new boards
+  CC-MAIN-2026-43 greenhouse: 27 blocks, 1051 new boards
+  CC-MAIN-2026-43 lever: 1 blocks, 266 new boards
+  CC-MAIN-2026-43 ashby: 2 blocks, 549 new boards
+  CC-MAIN-2026-39 paylocity: 2 blocks, 2473 new boards
+  CC-MAIN-2026-39 adp: 3 blocks, 1181 new boards
+  CC-MAIN-2026-39 paycom: 1 blocks, 0 new boards
+  CC-MAIN-2026-39 ukg: 4 blocks, 633 new boards
+  CC-MAIN-2026-39 workday: 24 blocks, 928 new boards
+  CC-MAIN-2026-39 icims: 15 blocks, 537 new boards
+  CC-MAIN-2026-39 bamboohr: 5 blocks, 1541 new boards
+  CC-MAIN-2026-39 applicantpro: 2 blocks, 210 new boards
+  CC-MAIN-2026-39 jazzhr: 1 blocks, 44 new boards
+  CC-MAIN-2026-39 isolved: 1 blocks, 154 new boards
+  CC-MAIN-2026-39 dayforce: 2 blocks, 143 new boards
+  CC-MAIN-2026-39 paycor: 1 blocks, 1 new boards
+  CC-MAIN-2026-39 greenhouse: 29 blocks, 927 new boards
+  CC-MAIN-2026-39 lever: 1 blocks, 19 new boards
+  CC-MAIN-2026-39 ashby: 8 blocks, 1622 new boards
+Boards in Common Crawl: 47120; to visit now: 5760
+
+Visited this run: 5760; still to visit: 0
+Boards visited so far: 50966; with a name: 28662; matched to our list: 1606
+  paylocity: 8588 visited, 8469 named, 743 matched, 119 errors
+  adp: 4756 visited, 0 named, 1 matched, 1162 errors
+  ukg: 4061 visited, 0 named, 0 matched, 1727 errors
+  workday: 7509 visited, 106 named, 51 matched, 2874 errors
+  icims: 4112 visited, 2687 named, 70 matched, 831 errors
+  bamboohr: 6671 visited, 6662 named, 421 matched, 9 errors
+  applicantpro: 842 visited, 637 named, 56 matched, 0 errors
+  jazzhr: 160 visited, 160 named, 10 matched, 0 errors
+  isolved: 594 visited, 539 named, 49 matched, 0 errors
+  dayforce: 3838 visited, 2321 named, 31 matched, 1517 errors
+  paycor: 1 visited, 1 named, 0 matched, 0 errors
+  greenhouse: 6259 visited, 3992 named, 123 matched, 2267 errors
+  lever: 286 visited, 228 named, 2 matched, 58 errors
+  ashby: 3289 visited, 2860 named, 49 matched, 428 errors
+job_boards.csv: 17254 rows ({'website crawl': 15648, 'both': 609, 'reverse search': 997}); organizations with a hiring-system board: 6260
