@@ -228,3 +228,6 @@ boards.csv
 return_cache.csv.gz
 *_summary.txt
 exit_code.txt
+reverse_boards.csv
+job_boards.csv
+*_samples.txt
