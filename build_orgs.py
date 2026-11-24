@@ -111,6 +111,13 @@ TIER_B_REVENUE = 5_000_000
 # Organizations whose latest IRS filing is older than this many years are dropped as inactive.
 MAX_FILING_AGE_YEARS = 3
 
+# The first year of e-filed returns the IRS publishes as XML. Indexes from this year on are read.
+FIRST_EFILE_YEAR = 2019
+
+# When an organization's latest return lists no website (or hasn't been posted yet), read up to
+# this many of its older returns, newest first, until one does.
+MAX_OLDER_RETURNS = 4
+
 # Organizations to leave off the list, by name. They're read from the EXCLUDE_NAMES environment
 # variable (in GitHub Actions, a repository secret of that name), so the names never appear in
 # this public code. Separate several names with semicolons, e.g. "ACME FOUNDATION; EXAMPLE CORP".
@@ -363,14 +370,15 @@ def find_column(keys: Iterable[str], *fragments: str) -> Optional[str]:
     return None
 
 
-def latest_returns(index_paths: Iterable[str], wanted: Set[str]) -> Dict[str, Dict[str, str]]:
+def all_returns(indexes: Iterable[Tuple[int, str]], wanted: Set[str]) -> Dict[str, List[Dict[str, str]]]:
     """
-    Read the IRS e-file index files and pick each wanted organization's most recent return.
-    Returns {ein: {"object_id", "tax_period", "return_type", "batch"}}; "batch" is the ZIP's name
-    when the index says which ZIP holds the return, otherwise ''.
+    Read the IRS e-file index files and list every return for each wanted organization,
+    newest first. `indexes` is (filing year, file path) pairs.
+    Returns {ein: [{"object_id", "tax_period", "return_type", "batch", "index_year", "ein"}, ...]};
+    "batch" is the ZIP's name when the index says which ZIP holds the return, otherwise ''.
     """
-    best: Dict[str, Dict[str, str]] = {}
-    for path in index_paths:
+    found: Dict[str, Dict[str, Dict[str, str]]] = collections.defaultdict(dict)
+    for year, path in indexes:
         cols = None
         for row in read_csv_rows(path):
             # Work out the column names once per file, since they vary a little by year.
@@ -391,21 +399,39 @@ def latest_returns(index_paths: Iterable[str], wanted: Set[str]) -> Dict[str, Di
             rtype = re.sub(r"[^0-9A-Z]", "", row.get(cols["type"] or "", "").upper())
             if rtype not in {"990", "990EZ", "990PF"}:
                 continue
-            candidate = {
-                "object_id": re.sub(r"\D", "", row.get(cols["object"] or "", "")),
+            oid = re.sub(r"\D", "", row.get(cols["object"] or "", ""))
+            if not oid:
+                continue
+            # Keyed by object ID, so a return listed in two indexes is kept once.
+            found[ein][oid] = {
+                "object_id": oid,
+                "ein": ein,
                 "tax_period": row.get(cols["period"] or "", ""),
                 "return_type": rtype,
                 "batch": row.get(cols["batch"] or "", "") if cols["batch"] else "",
+                "index_year": str(year),
             }
-            if not candidate["object_id"]:
-                continue
-            # Keep the latest tax period; for the same period, the higher (later) object ID,
-            # which is usually an amended return.
-            current = best.get(ein)
-            key_new = (to_int(candidate["tax_period"]), int(candidate["object_id"]))
-            if current is None or key_new > (to_int(current["tax_period"]), int(current["object_id"])):
-                best[ein] = candidate
-    return best
+    # Newest first: latest tax period, and for the same period the higher (later) object ID,
+    # which is usually an amended return.
+    return {ein: sorted(by_oid.values(), key=lambda c: (to_int(c["tax_period"]), int(c["object_id"])), reverse=True)
+            for ein, by_oid in found.items()}
+
+
+def older_targets(returns: Dict[str, List[Dict[str, str]]], cache: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    """
+    Pick the older returns worth reading: for each organization with no website yet (because its
+    latest return lists none, or hasn't been posted), its next MAX_OLDER_RETURNS returns.
+    Returns {object_id: return} for the ones not already cached.
+    """
+    targets: Dict[str, Dict[str, str]] = {}
+    for candidates in returns.values():
+        # Already have a website from some return? Nothing more to read for this organization.
+        if any(cache.get(c["object_id"], {}).get("website") for c in candidates):
+            continue
+        for c in candidates[1:1 + MAX_OLDER_RETURNS]:
+            if c["object_id"] not in cache:
+                targets[c["object_id"]] = c
+    return targets
 
 
 # ---------------------------------------------------------------------------
@@ -566,23 +592,28 @@ def save_cache(path: str, cache: Dict[str, Dict[str, str]]) -> None:
             writer.writerow(cache[oid])
 
 
-def fetch_returns(latest: Dict[str, Dict[str, str]], cache: Dict[str, Dict[str, str]],
-                  years: List[int], workdir: str, max_zips: Optional[int]) -> int:
+def fetch_returns(targets: Dict[str, Dict[str, str]], cache: Dict[str, Dict[str, str]],
+                  workdir: str, max_zips: Optional[int]) -> int:
     """
-    Read every needed return not already in `cache`, adding them to `cache`.
-    Returns how many ZIPs were downloaded.
+    Read the returns in `targets` ({object_id: return}) that aren't already in `cache`, adding
+    them to `cache`. Returns how many ZIPs were downloaded.
     """
-    # Object IDs we still need: in the latest-return list but not yet cached.
-    needed = {r["object_id"]: ein for ein, r in latest.items() if r["object_id"] not in cache}
-    print(f"Returns to read: {len(needed)} ({len(latest) - len(needed)} already cached)")
+    # Object IDs we still need, mapped to their organization's EIN.
+    needed = {oid: r["ein"] for oid, r in targets.items() if oid not in cache}
+    print(f"Returns to read: {len(needed)} ({len(targets) - len(needed)} already cached)")
     if not needed:
         return 0
-    # Every ZIP for the chosen years, newest year first.
+    # Only the filing years that hold the returns we need, newest first.
+    years = sorted({int(targets[oid]["index_year"]) for oid in needed}, reverse=True)
     urls = [url for year in years for url in list_zip_urls(year)]
     # The ZIP names without ".zip", e.g. "2025_TEOS_XML_01A".
     zip_names = {os.path.splitext(os.path.basename(u))[0] for u in urls}
     # If the index said which ZIP holds each return, only those ZIPs are downloaded...
-    batches = {r["batch"] for r in latest.values() if r["object_id"] in needed and r["batch"]}
+    batches = {targets[oid]["batch"] for oid in needed if targets[oid]["batch"]}
+    # Older indexes may not name the ZIP. If any needed return lacks one, read every ZIP for its
+    # year, since skipping by name could miss it.
+    if any(not targets[oid]["batch"] for oid in needed):
+        batches = set()
     # ...but only if those names really match the ZIP names; otherwise we read every ZIP to be safe.
     if batches and not (batches & zip_names):
         print("  index batch names don't match the ZIP names; reading every ZIP", file=sys.stderr)
@@ -624,7 +655,7 @@ def fetch_returns(latest: Dict[str, Dict[str, str]], cache: Dict[str, Dict[str, 
 # STEP 4: PUT IT TOGETHER AND WRITE orgs.csv
 # ---------------------------------------------------------------------------
 
-def build_rows(bmf: Dict[str, Dict[str, str]], latest: Dict[str, Dict[str, str]],
+def build_rows(bmf: Dict[str, Dict[str, str]], returns: Dict[str, List[Dict[str, str]]],
                cache: Dict[str, Dict[str, str]]) -> Tuple[List[Dict[str, str]], int]:
     """Combine the BMF with what the returns said; apply the final size floor. Returns (rows, dropped)."""
     rows: List[Dict[str, str]] = []
@@ -632,10 +663,14 @@ def build_rows(bmf: Dict[str, Dict[str, str]], latest: Dict[str, Dict[str, str]]
     for ein, b in bmf.items():
         kind = org_kind(to_int(b.get("FOUNDATION")))
         revenue = to_int(b.get("REVENUEAMT"))
-        # This organization's latest return, if we found and read one.
-        ret = latest.get(ein, {})
-        info = cache.get(ret.get("object_id", ""), {})
+        # Every return we read for this organization, newest first.
+        candidates = returns.get(ein, [])
+        infos = [cache[c["object_id"]] for c in candidates if c["object_id"] in cache]
+        # Staff count, form and tax year come from the newest return we could read...
+        info = infos[0] if infos else {}
         employees = info.get("employees", "")
+        # ...and the website from the newest return that lists one.
+        site_info = next((i for i in infos if i.get("website")), {})
         # Final floor for public charities: enough revenue, or enough staff on the 990.
         if kind == "public_charity" and revenue < FINAL_REVENUE_FLOOR and to_int(employees) < FINAL_EMPLOYEE_FLOOR:
             dropped_small += 1
@@ -644,7 +679,12 @@ def build_rows(bmf: Dict[str, Dict[str, str]], latest: Dict[str, Dict[str, str]]
         if not b.get("NTEECD"):
             notes.append("no NTEE code in IRS file")
         if not info:
-            notes.append("no recent e-filed return read")
+            notes.append("no e-filed return read")
+        elif candidates[0]["object_id"] not in cache:
+            # The index lists a newer return the IRS hasn't posted yet.
+            notes.append(f"details from {info.get('tax_year', 'an older')} return; latest not yet posted")
+        if site_info and site_info is not info:
+            notes.append(f"website from {site_info.get('tax_year', 'an older')} return")
         rows.append({
             "ein": ein,
             "name": b.get("NAME", ""),
@@ -659,7 +699,7 @@ def build_rows(bmf: Dict[str, Dict[str, str]], latest: Dict[str, Dict[str, str]]
             "revenue": str(revenue),
             "assets": str(to_int(b.get("ASSETAMT"))),
             "employees": employees,
-            "website": info.get("website", ""),
+            "website": site_info.get("website", ""),
             "tax_period": b.get("TAXPERIOD", ""),
             "return_form": info.get("form", ""),
             "return_tax_year": info.get("tax_year", ""),
@@ -701,7 +741,7 @@ def print_summary(rows: List[Dict[str, str]], dropped: collections.Counter, drop
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Build orgs.csv from IRS data.")
     parser.add_argument("--states", default="", help="Comma-separated state codes, e.g. TX,OK. Default: all.")
-    parser.add_argument("--years", default="", help="Filing years of returns to read, e.g. 2026,2025. Default: the last three years.")
+    parser.add_argument("--years", default="", help="Filing years of returns to read, e.g. 2026,2025. Default: every year since 2019.")
     parser.add_argument("--skip-990", action="store_true", help="Skip the returns; no websites or employee counts.")
     parser.add_argument("--max-zips", type=int, default=None, help="Stop after this many return ZIPs (for test runs).")
     parser.add_argument("--out", default=ORGS_CSV, help="Where to write orgs.csv.")
@@ -709,9 +749,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     this_year = datetime.date.today().year
-    # Returns filed in the last three years. The third year catches organizations whose most
-    # recent e-filed return is older (the first national run found about 11,000 of them).
-    years = [int(y) for y in args.years.split(",") if y.strip()] or [this_year, this_year - 1, this_year - 2]
+    # Every year of e-filed returns, newest first. Older years supply websites for organizations
+    # whose latest return lists none.
+    years = [int(y) for y in args.years.split(",") if y.strip()] or list(range(this_year, FIRST_EFILE_YEAR - 1, -1))
     # Oldest tax period that still counts as recent, e.g. 202301 when the setting is 3 years.
     min_tax_period = (this_year - MAX_FILING_AGE_YEARS) * 100 + 1
 
@@ -728,31 +768,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         bmf, dropped = load_bmf(paths, min_tax_period)
         print(f"BMF organizations passing the first filter: {len(bmf)}")
 
-        latest: Dict[str, Dict[str, str]] = {}
+        returns: Dict[str, List[Dict[str, str]]] = {}
         cache = load_cache(args.cache)
         zips = 0
         if not args.skip_990:
             # STEP 2: the e-file indexes.
-            index_paths = []
+            index_paths: List[Tuple[int, str]] = []
             for year in years:
                 dest = os.path.join(workdir, f"index_{year}.csv")
                 print(f"Downloading the {year} e-file index")
                 try:
                     download(EFILE_INDEX_URL.format(year=year), dest)
-                    index_paths.append(dest)
+                    index_paths.append((year, dest))
                 except (urllib.error.URLError, OSError) as err:
                     print(f"  couldn't get the {year} index: {err}", file=sys.stderr)
-            latest = latest_returns(index_paths, set(bmf))
-            print(f"Organizations with an e-filed return in {years}: {len(latest)}")
-            # STEP 3: read the returns (only the ones not already cached). "finally" saves the
-            # cache even if this step crashes, so the next run doesn't repeat finished work.
+            returns = all_returns(index_paths, set(bmf))
+            print(f"Organizations with an e-filed return since {years[-1]}: {len(returns)}")
+            # STEP 3: read the returns (only ones not already cached), in two rounds. "finally"
+            # saves the cache even if a round crashes, so the next run doesn't repeat finished work.
             try:
-                zips = fetch_returns(latest, cache, years, workdir, args.max_zips)
+                # Round 1: each organization's latest return.
+                latest = {c[0]["object_id"]: c[0] for c in returns.values()}
+                print("Round 1: latest returns")
+                zips = fetch_returns(latest, cache, workdir, args.max_zips)
+                # Round 2: older returns, only for organizations still without a website.
+                older = older_targets(returns, cache)
+                print(f"Round 2: older returns for organizations still without a website")
+                zips += fetch_returns(older, cache, workdir, args.max_zips)
             finally:
                 save_cache(args.cache, cache)
 
     # STEP 4: combine and write.
-    rows, dropped_small = build_rows(bmf, latest, cache)
+    rows, dropped_small = build_rows(bmf, returns, cache)
     write_rows(args.out, rows)
     print_summary(rows, dropped, dropped_small, zips)
     return 0
