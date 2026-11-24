@@ -60,7 +60,7 @@ import find_boards as fb
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Bump this when the guessing rules change, so every organization is guessed again.
-WEBSITES_VERSION = "1"
+WEBSITES_VERSION = "2"
 
 # Look again at organizations we found nothing for after this many days.
 RECHECK_DAYS = 90
@@ -98,6 +98,22 @@ LEGAL_ENDINGS = {"inc", "incorporated", "corp", "corporation", "co", "company", 
                  "pc", "pllc", "nfp", "dba"}
 # Small words that domains often leave out ("foodbanknorthalabama.org").
 SMALL_WORDS = {"of", "the", "and", "for", "in", "at", "a", "an", "on", "to"}
+# Words that don't tell organizations apart: "Johnson Family Foundation" has one telling word,
+# "johnson". They still have to appear on the page, but don't count toward MIN_TELLING_WORDS.
+GENERIC_WORDS = {"family", "foundation", "foundations", "fund", "trust", "charitable", "charity",
+                 "charities", "memorial"}
+# A name with at least this many telling words is distinctive enough on its own; shorter names
+# also need the page to mention the organization's city or ZIP code.
+MIN_TELLING_WORDS = 3
+
+# Directory, social-media and data sites. Some guessed domains forward to an organization's page
+# on one of these, which names the organization but isn't its website.
+BLOCKED_HOSTS = re.compile(
+    r"(?:^|\.)(?:propublica\.org|guidestar\.org|candid\.org|charitynavigator\.org|causeiq\.com|"
+    r"greatnonprofits\.org|idealist\.org|facebook\.com|instagram\.com|linkedin\.com|twitter\.com|"
+    r"x\.com|youtube\.com|yelp\.com|wikipedia\.org|opencorporates\.com|bizapedia\.com|"
+    r"dnb\.com|irs\.gov|google\.com|sites\.google\.com|godaddysites\.com)$", re.IGNORECASE)
+
 # Words that mark a trust run by a bank ("SMITH JOHN TR UW"): no staff and no website to find.
 TRUST_MARKERS = {"tr", "uw", "ua", "ttee", "trst", "est"}
 
@@ -122,7 +138,7 @@ US_STATES = set(
     "NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR GU VI AS MP".split())
 
 # websites.csv columns.
-COLUMNS = ["ein", "name", "city", "state", "size_tier", "website", "source", "tried",
+COLUMNS = ["ein", "name", "city", "state", "size_tier", "website", "source", "evidence", "tried",
            "checked_at", "version", "error"]
 
 
@@ -196,7 +212,9 @@ def domain_guesses(name: str) -> List[str]:
     core = [w for w in words if w not in SMALL_WORDS]
     labels = ["".join(core), "".join(words)]
     # Middle initials are usually left out: "henry b tippie foundation" -> "henrytippiefoundation".
-    labels.append("".join(w for w in core if len(w) > 1))
+    # Only middle ones: "a e m family foundation" without its initials is just "familyfoundation".
+    if len(core[0]) > 1:
+        labels.append("".join(w for w in core if len(w) > 1))
     if len(core) >= 2:
         # Some organizations use hyphens between the words.
         labels.append("-".join(core))
@@ -221,39 +239,54 @@ def squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
-def page_names_org(page: str, org: Dict[str, str], domain: str) -> bool:
-    """
-    True if a fetched homepage belongs to this organization:
-    - it isn't a parked or for-sale domain;
-    - every main word of the name appears in the title or headings (with the guessed domain
-      itself removed, since parked pages often just repeat it);
-    - and for names of one or two main words, which other organizations share, the page also
-      mentions the organization's city or ZIP code.
-    """
-    if PARKED.search(page[:300_000]):
-        return False
-    core = [w for w in name_words(org.get("name", "")) if w not in SMALL_WORDS]
-    if not core:
-        return False
-    # Take out the domain as written ("foodbanknorthalabama.org"), so a parked page whose title
-    # is just the domain doesn't count as naming the organization. Then squash, so "FoodBank"
-    # in a title still contains "food" and "bank".
-    head = squash(head_text(page).replace(domain.lower(), " "))
-    if not all(w in head for w in core):
-        return False
-    if len(core) >= 3:
-        return True
-    # Short names: look for the city or the 5-digit ZIP code anywhere on the page.
+def mentions_place(page: str, org: Dict[str, str]) -> bool:
+    """True if the page mentions the organization's city or its 5-digit ZIP code."""
     text = page.lower()
     city = (org.get("city") or "").lower().strip()
     zip5 = (org.get("zip") or "")[:5]
     return bool((city and city in text) or (zip5 and zip5 in text))
 
 
+def page_names_org(page: str, org: Dict[str, str], domain: str) -> str:
+    """
+    Whether a fetched homepage belongs to this organization. Returns the evidence:
+    "name+place" (the name and the city or ZIP), "name" (the name alone, enough for a long,
+    distinctive name), or "" (not this organization). The page must:
+    - not be a parked or for-sale domain;
+    - show every main word of the name in its title or headings (with the guessed domain itself
+      removed, since parked pages often just repeat it);
+    - and, for names with fewer than MIN_TELLING_WORDS telling words, which other organizations
+      share, mention the organization's city or ZIP code.
+    """
+    if PARKED.search(page[:300_000]):
+        return ""
+    core = [w for w in name_words(org.get("name", "")) if w not in SMALL_WORDS]
+    if not core:
+        return ""
+    # Take out the domain as written ("foodbanknorthalabama.org"), so a parked page whose title
+    # is just the domain doesn't count as naming the organization. Then squash, so "FoodBank"
+    # in a title still contains "food" and "bank".
+    head = squash(head_text(page).replace(domain.lower(), " "))
+    if not all(w in head for w in core):
+        return ""
+    if mentions_place(page, org):
+        return "name+place"
+    # Telling words: not generic, and not single letters (initials).
+    telling = [w for w in core if w not in GENERIC_WORDS and len(w) > 1]
+    return "name" if len(telling) >= MIN_TELLING_WORDS else ""
+
+
 def home_address(url: str) -> str:
-    """Just the scheme and host of an address: "https://www.x.org/home" -> "https://www.x.org"."""
+    """Just the scheme and host of an address: "https://www.x.org:443/home" -> "https://www.x.org"."""
     parts = urllib.parse.urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}"
+    # .hostname drops a port number (":443") and lowercases the host.
+    return f"{parts.scheme}://{parts.hostname or ''}"
+
+
+def host_key(url: str) -> str:
+    """A website's host without "www.", for telling whether two addresses are the same site."""
+    host = urllib.parse.urlsplit(url if "//" in url else "//" + url).hostname or ""
+    return host[4:] if host.startswith("www.") else host
 
 
 def guess_website(org: Dict[str, str]) -> Dict[str, str]:
@@ -268,8 +301,12 @@ def guess_website(org: Dict[str, str]) -> Dict[str, str]:
         except fb.NETWORK_ERRORS:
             # Most guesses don't exist at all; that fails quickly.
             continue
-        if page_names_org(page, org, domain):
-            row.update(website=home_address(final_url), source="guess")
+        # A guess that forwards to a directory or social-media page isn't the organization's site.
+        if BLOCKED_HOSTS.search(urllib.parse.urlsplit(final_url).hostname or ""):
+            continue
+        evidence = page_names_org(page, org, domain)
+        if evidence:
+            row.update(website=home_address(final_url), source="guess", evidence=evidence)
             break
     row["tried"] = " ".join(tried)
     return row
@@ -343,6 +380,33 @@ def sort_key(org: Dict[str, str]) -> Tuple[int, float]:
     return order.get(org.get("size_tier", ""), 9), -size
 
 
+def drop_shared_guesses(rows: Dict[str, Dict[str, str]], known: Dict[str, int]) -> int:
+    """
+    A website is one organization's. When a guessed site is also claimed by another organization
+    (another guess, or a website listed in orgs.csv), keep it only for a single guess whose page
+    also gave that organization's city or ZIP code; clear it for the rest.
+    `known` counts orgs.csv's websites by host. Returns how many guesses were cleared.
+    """
+    # Which guessed rows claim each site.
+    claims: Dict[str, List[Dict[str, str]]] = collections.defaultdict(list)
+    for row in rows.values():
+        if row.get("source") == "guess" and row.get("website"):
+            claims[host_key(row["website"])].append(row)
+    cleared = 0
+    for host, claimants in claims.items():
+        if len(claimants) + known.get(host, 0) < 2:
+            continue
+        with_place = [r for r in claimants if r.get("evidence") == "name+place"]
+        # A single claimant with the city or ZIP keeps it, unless orgs.csv already gives the site
+        # to someone else.
+        keep = with_place[0] if len(with_place) == 1 and not known.get(host) else None
+        for r in claimants:
+            if r is not keep:
+                r.update(website="", source="", evidence="", error=f"site also claimed by another org: {host}")
+                cleared += 1
+    return cleared
+
+
 def print_summary(rows: Dict[str, Dict[str, str]], checked: int) -> None:
     """Print what was found, by source and tier."""
     found = [r for r in rows.values() if r.get("website")]
@@ -412,6 +476,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                             check=guess_website, timeout_row=timed_out_row)
     if checked < len(todo):
         print(f"Time limit of {args.max_minutes} minutes reached; saving and stopping.")
+    # Hosts of the websites orgs.csv already gives to organizations.
+    known = collections.Counter(host_key(o["website"]) for o in read_csv(args.orgs) if o.get("website"))
+    print(f"Guesses cleared because another organization claims the site: {drop_shared_guesses(rows, known)}")
     write_websites(args.out, rows.values())
     print_summary(rows, checked)
     return 0

@@ -32,7 +32,15 @@ SITES = {
     "https://riverhouse.org": "<title>River House</title><p>Visit us in Portland, OR</p>",
     # A site found only under .com, with hyphens.
     "https://www.lakeside-arts-education-council.com": "<h1>Lakeside Arts &amp; Education Council</h1>",
+    # A family foundation's site with no city: "family" and "foundation" don't tell orgs apart.
+    "https://examplefamilyfoundation.org": "<title>Example Family Foundation</title>",
+    # A guessed domain that forwards to the organization's page on a directory site.
+    "https://springfieldseniorcenter.org": "<title>Springfield Senior Center - Nonprofit Explorer</title>"
+                                           "<p>Springfield, IL</p>",
 }
+
+# Where a fake domain forwards to: (final address, page).
+FORWARDS = {"https://springfieldseniorcenter.org": "https://projects.propublica.org/nonprofits/organizations/1"}
 
 # Sample organizations, as orgs.csv rows.
 ORGS = [
@@ -60,7 +68,7 @@ def fake_fetch_home(url):
     """Stand-in for find_boards.fetch_home: serves SITES (with or without www.), or fails like a missing domain."""
     for address in (url, url.replace("https://", "https://www.")):
         if address in SITES:
-            return address + "/", SITES[address]
+            return FORWARDS.get(address, address + "/"), SITES[address]
     raise urllib.error.URLError("Name or service not known")
 
 
@@ -87,8 +95,37 @@ class GuessTests(unittest.TestCase):
         self.assertEqual(found["000000002"]["website"], "")
         # Same short name in another city: rejected.
         self.assertEqual(found["000000003"]["website"], "")
-        # Three main words, so no city needed; found under .com with hyphens and www.
+        # Four telling words, so no city needed; found under .com with hyphens and www.
         self.assertEqual(found["000000004"]["website"], "https://www.lakeside-arts-education-council.com")
+        self.assertEqual(found["000000004"]["evidence"], "name")
+        self.assertEqual(found["000000001"]["evidence"], "name+place")
+
+    def test_generic_names_need_a_place(self):
+        org = dict(ORGS[0], ein="000000010", name="EXAMPLE FAMILY FOUNDATION")
+        with mock.patch.object(fb, "fetch_home", fake_fetch_home):
+            self.assertEqual(fw.guess_website(org)["website"], "")
+
+    def test_directory_pages_are_rejected(self):
+        org = dict(ORGS[0], ein="000000011", name="SPRINGFIELD SENIOR CENTER")
+        with mock.patch.object(fb, "fetch_home", fake_fetch_home):
+            self.assertEqual(fw.guess_website(org)["website"], "")
+
+    def test_middle_initials_only(self):
+        self.assertIn("henrytippiefoundation.org", fw.domain_guesses("HENRY B TIPPIE FOUNDATION"))
+        self.assertNotIn("familyfoundation.org", fw.domain_guesses("A E M FAMILY FOUNDATION"))
+
+    def test_shared_sites_go_to_one_org(self):
+        rows = {
+            "1": {"source": "guess", "website": "https://www.smithfund.org", "evidence": "name+place"},
+            "2": {"source": "guess", "website": "https://smithfund.org", "evidence": "name"},
+            # Claims a site orgs.csv already gives to another organization.
+            "3": {"source": "guess", "website": "https://parentorg.org", "evidence": "name+place"},
+        }
+        cleared = fw.drop_shared_guesses(rows, {"parentorg.org": 1})
+        self.assertEqual(cleared, 2)
+        self.assertEqual(rows["1"]["website"], "https://www.smithfund.org")
+        self.assertEqual(rows["2"]["website"], "")
+        self.assertEqual(rows["3"]["website"], "")
 
     def test_parse_wikidata(self):
         answer = {"results": {"bindings": [
