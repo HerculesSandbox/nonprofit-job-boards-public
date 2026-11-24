@@ -51,9 +51,16 @@ python3 -m unittest discover -s tests -v
 
 For each organization in `orgs.csv` with a website, biggest tiers first:
 
-1. Looks on the homepage for a link to, or an embed from, a known applicant tracking system (ATS).
-2. Otherwise follows the careers link (or tries `/careers`, `/jobs`, `/employment`) and looks there.
-3. Otherwise follows one "current openings" link from the careers page.
+1. Reads the homepage, retrying with and without `www.` and over http or https if it fails, and
+   without the certificate check if the site's certificate is broken. Looks there for a link to,
+   or an embed from, a known applicant tracking system (ATS).
+2. Otherwise looks for a careers page, in this order: up to three careers links on the homepage;
+   common addresses (`/careers`, `/jobs`, `/join-our-team` and others); the site's sitemap.
+   A guessed address only counts if its title or heading is about jobs.
+3. On each careers page, follows up to three "current openings" links.
+
+Each organization gets 60 seconds of searching. An organization is checked again when its website
+in `orgs.csv` changes.
 
 **Output: `boards.csv`**: careers page, ATS name, board ID and a clean board URL for each
 organization. `site_page` means jobs are posted on the organization's own site; `not_found` and
