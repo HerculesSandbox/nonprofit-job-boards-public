@@ -86,7 +86,7 @@ SAVE_EVERY = 500
 
 # Bump this whenever a change would give different answers. Rows written by an older version are
 # rechecked on the next run instead of waiting --recheck-days.
-FINDER_VERSION = "3"
+FINDER_VERSION = "4"
 
 # Only the first 2 MB of a page are read; that always covers its links.
 MAX_PAGE_BYTES = 2_000_000
@@ -118,14 +118,45 @@ NOT_CAREER_WORDS = ["volunteer", "board of directors", "board member", "internsh
 OPENINGS_WORDS = ["current openings", "open positions", "view openings", "view jobs", "view all jobs",
                   "job openings", "see openings", "apply", "openings", "positions", "job board"]
 
-# Common careers addresses to try when the homepage has no careers link.
-COMMON_PATHS = ["/careers", "/jobs", "/employment"]
+# Common careers addresses to try when the homepage's careers links lead nowhere.
+# Most of these simply don't exist on a given site and fail quickly.
+COMMON_PATHS = ["/careers", "/jobs", "/employment", "/join-our-team", "/work-with-us", "/about/careers",
+                "/about-us/careers", "/employment-opportunities", "/job-opportunities", "/careers.html"]
+
+# Where websites usually keep their sitemap: a file listing every page on the site, written for
+# search engines. A careers page with no link from the homepage often still appears there.
+SITEMAP_PATHS = ["/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml"]
+# A sitemap can be an "index" pointing to smaller sitemaps; read at most this many of those.
+MAX_CHILD_SITEMAPS = 3
+
+# How many careers links on the homepage, and "view openings" links on a careers page, to follow.
+MAX_CAREERS_LINKS = 3
+MAX_OPENINGS_LINKS = 3
+
+# Seconds of searching per organization before we stop starting new pages. It leaves room for one
+# last slow page to finish inside ORG_DEADLINE (defined below), so the org isn't lost to a timeout.
+ORG_BUDGET = 60
+
+# A page title or heading that says this is a careers page. Used for pages we guessed at
+# (common paths, sitemap entries): a site that answers every address with its homepage
+# shouldn't count as having a careers page.
+CAREERS_HEADING = re.compile(
+    r"<(title|h1|h2)[^>]*>[^<]{0,200}?\b(careers?|jobs?|employment|job openings|open positions"
+    r"|join (?:our|the) team|work (?:with|for) us)\b",
+    re.IGNORECASE)
 
 # A normal browser identity; many sites refuse requests that don't look like one.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130 Safari/537.36"
 )
+# The other details a browser sends. Some firewalls answer "403 Forbidden" when these are missing.
+# (No "Accept-Encoding": urllib can't unpack compressed pages, so we ask for plain ones.)
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 # Known applicant tracking systems: (name, address pattern, how to build a clean board URL).
 # Patterns that start with a subdomain use (?<![a-z0-9-]) ("not right after a letter, digit or
@@ -174,11 +205,39 @@ ATS_PATTERNS: List[Tuple[str, str, str]] = [
     ("breezy", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.breezy\.hr", "https://{1}.breezy.hr"),
     ("recruitee", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.recruitee\.com", "https://{1}.recruitee.com"),
     ("neogov", r"governmentjobs\.com/careers/([a-z0-9]+)", "https://www.governmentjobs.com/careers/{1}"),
+    # UKG Ready (formerly Kronos Workforce Ready), common at small employers. The server name
+    # (secure, secure3, secure4...) differs by customer, so it's captured too.
+    ("ukg_ready", r"(?<![a-z0-9-])(secure\d*\.saashr\.com)/ta/([a-z0-9]+)\.careers",
+     "https://{1}/ta/{2}.careers?CareersSearch"),
+    # ADP's older "Recruiting Management" boards, separate from ADP Workforce Now.
+    ("adp", r"recruiting\.adp\.com/srccar/public/rti\.home\?[^\"'\s<>]*?c=(\d+)",
+     "https://recruiting.adp.com/srccar/public/RTI.home?c={1}"),
+    ("hirebridge", r"recruit\.hirebridge\.com/v3/[^\"'\s<>]*?cid=(\d+)",
+     "https://recruit.hirebridge.com/v3/jobs/list.aspx?cid={1}"),
+    ("jobvite", r"jobs\.jobvite\.com/([a-z0-9-]+)", "https://jobs.jobvite.com/{1}"),
+    ("successfactors", r"career\d*\.successfactors\.(?:com|eu)/career\?[^\"'\s<>]*?company=([a-z0-9_-]+)",
+     "https://career4.successfactors.com/career?company={1}"),
+    ("oracle", r"(?<![a-z0-9-])([a-z0-9-]{1,63}\.fa\.[a-z0-9-]{1,63}\.oraclecloud\.com)/hcmui/"
+               r"candidateexperience/[a-z]{2}(?:-[a-z]{2})?/sites/([a-z0-9_-]+)",
+     "https://{1}/hcmUI/CandidateExperience/en/sites/{2}"),
+    ("peopleadmin", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.peopleadmin\.com", "https://{1}.peopleadmin.com/postings"),
+    ("applicantstack", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.applicantstack\.com", "https://{1}.applicantstack.com/x/openings"),
+    ("hiringthing", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.hiringthing\.com", "https://{1}.hiringthing.com"),
+    ("careerplug", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.careerplug\.com", "https://{1}.careerplug.com/jobs"),
+    ("zoho", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.zohorecruit\.com", "https://{1}.zohorecruit.com/jobs/Careers"),
+    ("gusto", r"jobs\.gusto\.com/boards/([a-z0-9-]+)", "https://jobs.gusto.com/boards/{1}"),
+    ("trinet", r"app\.trinethire\.com/companies/([a-z0-9-]+)", "https://app.trinethire.com/companies/{1}/jobs"),
+    ("hireology", r"careers\.hireology\.com/([a-z0-9-]+)", "https://careers.hireology.com/{1}"),
+    ("pinpoint", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.pinpointhq\.com", "https://{1}.pinpointhq.com"),
+    ("teamtailor", r"(?<![a-z0-9-])([a-z0-9-]{1,63})\.teamtailor\.com", "https://{1}.teamtailor.com/jobs"),
+    # Idealist, the big nonprofit job site: an organization's page lists its current openings.
+    ("idealist", r"idealist\.org/(?:[a-z]{2}/)?nonprofit/([a-z0-9-]+)", "https://www.idealist.org/en/nonprofit/{1}"),
     # A single Paylocity job page names no board, but still tells us the system.
     ("paylocity", r"recruiting\.paylocity\.com/recruiting/jobs/details/(\d+)", ""),
 ]
 # Board IDs that are really parts of the ATS's own website, not a customer's board.
-BAD_IDS = {"www", "api", "embed", "careers", "jobs", "app", "help", "support", "static", "assets", "cdn"}
+BAD_IDS = {"www", "api", "embed", "careers", "jobs", "app", "help", "support", "static", "assets", "cdn",
+           "blog", "login", "search"}
 
 # Column order for boards.csv.
 BOARD_COLUMNS = ["ein", "name", "state", "size_tier", "website", "careers_url", "ats_platform",
@@ -196,12 +255,18 @@ NETWORK_ERRORS = (urllib.error.URLError, socket.timeout, ssl.SSLError, Connectio
                   ValueError, UnicodeError)
 
 
-def fetch_page(url: str) -> Tuple[str, str]:
-    """Download a page. Returns (its final address after any redirects, its text)."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"})
+def fetch_page(url: str, verify: bool = True) -> Tuple[str, str]:
+    """
+    Download a page. Returns (its final address after any redirects, its text).
+    verify=False skips checking the site's security certificate (see fetch_with_fallback).
+    """
+    req = urllib.request.Request(url, headers=BROWSER_HEADERS)
     # When this page's time is up, by the computer's steady clock.
     deadline = time.monotonic() + PAGE_DEADLINE
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+    # An "SSL context" holds the security settings for https. None means Python's normal,
+    # fully checked settings; the unverified one accepts any certificate.
+    context = None if verify else ssl._create_unverified_context()
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=context) as resp:
         chunks: List[bytes] = []
         size = 0
         # Read in 64 KB pieces, stopping at MAX_PAGE_BYTES (giant pages are almost never careers
@@ -219,15 +284,67 @@ def fetch_page(url: str) -> Tuple[str, str]:
         return resp.geturl(), b"".join(chunks).decode("utf-8", errors="replace")
 
 
+def is_certificate_error(err: Exception) -> bool:
+    """True if a failed download was caused by the site's security certificate."""
+    # urllib wraps the real problem in URLError; the underlying error is in .reason.
+    return isinstance(err, ssl.SSLError) or isinstance(getattr(err, "reason", None), ssl.SSLError)
+
+
 def fetch_with_fallback(url: str) -> Tuple[str, str]:
-    """fetch_page, but if an https site has a broken security certificate, retry over http."""
+    """
+    fetch_page, but if an https site has a broken security certificate, retry over plain http,
+    and if that fails too, read the https page without checking the certificate.
+    """
     try:
         return fetch_page(url)
-    except urllib.error.URLError as err:
-        # Small nonprofits' certificates are often expired; the http version usually still works.
-        if url.startswith("https://") and isinstance(getattr(err, "reason", None), ssl.SSLError):
-            return fetch_page("http://" + url[len("https://"):])
-        raise
+    except NETWORK_ERRORS as err:
+        if not (url.startswith("https://") and is_certificate_error(err)):
+            raise
+    # Small nonprofits' certificates are often expired or incompletely installed.
+    # First try: the http version, which usually still works.
+    try:
+        return fetch_page("http://" + url[len("https://"):])
+    except NETWORK_ERRORS:
+        pass
+    # Last try: skip the certificate check. That check protects data you send to a site; we only
+    # read public pages and send nothing, so the risk is just reading a faked page.
+    return fetch_page(url, verify=False)
+
+
+def address_variants(url: str) -> List[str]:
+    """
+    Other ways of writing a homepage address, in the order to try them:
+    with and without "www.", and https instead of http (or the reverse).
+    "https://example.org" -> ["https://example.org", "https://www.example.org", "http://example.org"]
+    """
+    parts = urllib.parse.urlsplit(url)
+    host = parts.netloc
+    # The same host with "www." added or taken off.
+    other_host = host[4:] if host.lower().startswith("www.") else "www." + host
+    other_scheme = "http" if parts.scheme == "https" else "https"
+    variants = [url,
+                urllib.parse.urlunsplit((parts.scheme, other_host) + tuple(parts[2:])),
+                urllib.parse.urlunsplit((other_scheme, host) + tuple(parts[2:]))]
+    # Drop repeats while keeping the order.
+    return list(dict.fromkeys(variants))
+
+
+def fetch_home(url: str) -> Tuple[str, str]:
+    """
+    Fetch a homepage, trying address_variants() in turn. The IRS address is often missing or has
+    an extra "www." that the site doesn't answer to, or the site only works over http or https.
+    If every variant fails, the error from the address as written is raised.
+    """
+    first_error: Optional[BaseException] = None
+    for variant in address_variants(url):
+        try:
+            return fetch_with_fallback(variant)
+        except NETWORK_ERRORS as err:
+            # "429 Too Many Requests" means slow down: trying other addresses won't help.
+            if isinstance(err, urllib.error.HTTPError) and err.code == 429:
+                raise
+            first_error = first_error or err
+    raise first_error  # type: ignore[misc]
 
 
 class LinkCollector(HTMLParser):
@@ -350,6 +467,51 @@ def best_links(base_url: str, page: str, words: List[str], limit: int = 2) -> Li
     return out
 
 
+def looks_like_careers_page(url: str, page: str) -> bool:
+    """
+    True if a page we guessed at (a common path or a sitemap entry) really is a careers page:
+    it wasn't sent back to the homepage, and its title or a main heading talks about jobs.
+    """
+    # Many sites answer any unknown address by sending you to the homepage ("/").
+    if urllib.parse.urlparse(url).path.strip("/") == "":
+        return False
+    return bool(CAREERS_HEADING.search(page))
+
+
+def sitemap_links(home_url: str) -> List[str]:
+    """
+    Careers-looking page addresses from the site's sitemap, best first (at most MAX_CAREERS_LINKS).
+    Returns an empty list if the site has no readable sitemap.
+    """
+    for path in SITEMAP_PATHS:
+        try:
+            _, xml = fetch_with_fallback(urllib.parse.urljoin(home_url, path))
+        except NETWORK_ERRORS:
+            continue
+        # Every address in a sitemap sits between <loc> and </loc>.
+        locs = [html.unescape(m.strip()) for m in re.findall(r"<loc>\s*([^<]+?)\s*</loc>", xml, re.I)]
+        if not locs:
+            # Not a real sitemap (often the homepage, sent back for an unknown address).
+            continue
+        if re.search(r"<sitemapindex", xml, re.I):
+            # A sitemap index lists smaller sitemaps. Page sitemaps beat post (blog) sitemaps,
+            # since a careers page is a page, not a blog post.
+            children = sorted(locs, key=lambda u: 0 if "page" in u.lower() else 1)[:MAX_CHILD_SITEMAPS]
+            locs = []
+            for child in children:
+                try:
+                    _, child_xml = fetch_with_fallback(child)
+                except NETWORK_ERRORS:
+                    continue
+                locs += re.findall(r"<loc>\s*([^<]+?)\s*</loc>", child_xml, re.I)
+        # Score each address like a link with no text: only its path counts.
+        scored = [(score_link(u, "", CAREER_WORDS), u) for u in locs if same_site(u, home_url)]
+        best = [u for s, u in sorted(scored, key=lambda pair: -pair[0]) if s]
+        # One sitemap is enough; stop at the first that had any addresses.
+        return list(dict.fromkeys(best))[:MAX_CAREERS_LINKS]
+    return []
+
+
 def check_org(org: Dict[str, str]) -> Dict[str, str]:
     """Find one organization's job board. Returns a row for boards.csv."""
     # Start from the organization's details; the rest is filled in below.
@@ -361,54 +523,84 @@ def check_org(org: Dict[str, str]) -> Dict[str, str]:
     if not row["website"]:
         row["ats_platform"], row["method"] = "not_found", "no website"
         return row
+    # When this organization's search time runs out (see ORG_BUDGET).
+    give_up_at = time.monotonic() + ORG_BUDGET
     try:
-        # 1. The homepage.
-        home_url, home = fetch_with_fallback(row["website"])
+        # 1. The homepage, trying other spellings of its address if it fails.
+        home_url, home = fetch_home(row["website"])
         found = detect_ats(home)
         if found:
             row.update(found, careers_url=home_url, method="homepage")
             return row
-        # 2. Careers links on the homepage; if there are none, the usual careers addresses.
-        candidates = best_links(home_url, home, CAREER_WORDS)
-        method = "careers link"
-        if not candidates:
-            candidates = [urllib.parse.urljoin(home_url, path) for path in COMMON_PATHS]
-            method = "common path"
-        for url in candidates:
-            # A careers link that goes straight to an ATS needs no fetch at all.
-            found = detect_ats(url)
-            if found:
-                row.update(found, careers_url=url, method=method)
-                return row
-            try:
-                careers_url, careers = fetch_with_fallback(url)
-            except NETWORK_ERRORS:
-                # A missing /careers page is normal; try the next candidate.
-                continue
-            # A common path only counts if the page really talks about jobs.
-            if method == "common path" and not re.search(r"\b(careers?|jobs?|employment)\b", careers, re.I):
-                continue
-            found = detect_ats(careers)
-            if found:
-                row.update(found, careers_url=careers_url, method=method)
-                return row
-            # 3. One more hop: a "view openings" link on the careers page.
-            for openings in best_links(careers_url, careers, OPENINGS_WORDS, limit=1):
-                found = detect_ats(openings)
-                if not found:
-                    try:
-                        _, page = fetch_with_fallback(openings)
-                        found = detect_ats(page)
-                    except NETWORK_ERRORS:
-                        found = None
+        # 2. Possible careers pages, from three sources, tried in order. The later sources are
+        #    functions ("lambda" makes a small unnamed one), so they only run if they're needed.
+        stages = [
+            ("careers link", lambda: best_links(home_url, home, CAREER_WORDS, limit=MAX_CAREERS_LINKS)),
+            ("common path", lambda: [urllib.parse.urljoin(home_url, p) for p in COMMON_PATHS]),
+            ("sitemap", lambda: sitemap_links(home_url)),
+        ]
+        # The first careers page on the organization's own site with no ATS: (address, method).
+        # Kept while we look further, in case another candidate leads to an ATS.
+        own_page: Optional[Tuple[str, str]] = None
+        # Addresses already fetched, so a careers link and a common path don't repeat a page.
+        seen = set()
+        for method, get_candidates in stages:
+            # Out of time: don't even gather the next stage's addresses (the sitemap is a fetch).
+            if time.monotonic() > give_up_at:
+                break
+            for url in get_candidates():
+                # Out of time: stop starting new pages and report what we have.
+                if time.monotonic() > give_up_at:
+                    break
+                # A careers link that goes straight to an ATS needs no fetch at all.
+                found = detect_ats(url)
                 if found:
-                    row.update(found, careers_url=careers_url, method=method + " + openings link")
+                    row.update(found, careers_url=url, method=method)
                     return row
-            # A careers page on the organization's own site with no ATS: jobs are posted right there.
-            if same_site(careers_url, home_url) or method == "common path":
-                row.update(ats_platform="site_page", careers_url=careers_url, method=method)
-                return row
-        row.update(ats_platform="not_found", method="no careers page found")
+                if url in seen:
+                    continue
+                seen.add(url)
+                try:
+                    careers_url, careers = fetch_with_fallback(url)
+                except NETWORK_ERRORS:
+                    # A missing page is normal here; try the next candidate.
+                    continue
+                # Two addresses that redirect to the same page count once.
+                if careers_url != url and careers_url in seen:
+                    continue
+                seen.add(careers_url)
+                # Guessed addresses only count if the page really is a careers page.
+                if method != "careers link" and not looks_like_careers_page(careers_url, careers):
+                    continue
+                found = detect_ats(careers)
+                if found:
+                    row.update(found, careers_url=careers_url, method=method)
+                    return row
+                # 3. One more hop: "view openings" links on the careers page.
+                for openings in best_links(careers_url, careers, OPENINGS_WORDS, limit=MAX_OPENINGS_LINKS):
+                    found = detect_ats(openings)
+                    if not found and time.monotonic() < give_up_at:
+                        try:
+                            _, page = fetch_with_fallback(openings)
+                            found = detect_ats(page)
+                        except NETWORK_ERRORS:
+                            found = None
+                    if found:
+                        row.update(found, careers_url=careers_url, method=method + " + openings link")
+                        return row
+                # A careers page on the organization's own site with no ATS: jobs may be posted
+                # right there. Remember the first one and keep looking for an ATS.
+                if own_page is None and (same_site(careers_url, home_url) or method != "careers link"):
+                    own_page = (careers_url, method)
+            # An own-site careers page settles it; guessing more addresses would find the same page.
+            if own_page is not None:
+                break
+        if own_page is not None:
+            row.update(ats_platform="site_page", careers_url=own_page[0], method=own_page[1])
+        elif time.monotonic() > give_up_at:
+            row.update(ats_platform="not_found", method="ran out of time")
+        else:
+            row.update(ats_platform="not_found", method="no careers page found")
     except NETWORK_ERRORS as err:
         # The homepage itself couldn't be read (site down, domain expired, blocked).
         row.update(ats_platform="error", error=str(err)[:200])
@@ -503,10 +695,17 @@ def run_checks(todo: List[Dict[str, str]], workers: int, org_deadline: float,
     return finished
 
 
-def is_fresh(row: Dict[str, str], today: datetime.date, recheck_days: int) -> bool:
-    """True if this organization was checked recently enough to skip. Errors are retried after a week."""
+def is_fresh(row: Dict[str, str], today: datetime.date, recheck_days: int, website: str = "") -> bool:
+    """
+    True if this organization was checked recently enough to skip. Errors are retried after a week.
+    `website` is the organization's address in today's orgs.csv.
+    """
     # Rows from an older version of the finder may be wrong, so they're never fresh.
     if row.get("finder_version") != FINDER_VERSION:
+        return False
+    # The organization list now has a different website (often a new one where there was none):
+    # the old answer was about the old address, so check again.
+    if row.get("website", "") != website:
         return False
     try:
         checked = datetime.date.fromisoformat(row.get("checked_at", ""))
@@ -556,7 +755,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Biggest tiers first; within a tier, biggest revenue first.
     order = {t: i for i, t in enumerate(TIER_ORDER)}
     orgs.sort(key=lambda o: (order.get(o["size_tier"], 9), -int(o.get("revenue") or 0)))
-    todo = [o for o in orgs if not (o["ein"] in results and is_fresh(results[o["ein"]], today, args.recheck_days))]
+    todo = [o for o in orgs if not (o["ein"] in results and
+                                    is_fresh(results[o["ein"]], today, args.recheck_days, o.get("website", "")))]
     if args.limit is not None:
         todo = todo[:args.limit]
     print(f"Organizations in the chosen tiers: {len(orgs)}; to check now: {len(todo)}")

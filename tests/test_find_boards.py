@@ -66,11 +66,33 @@ SITES = {
     "https://theta.org/programs/career-pathways": "<p>Training for adults.</p>",
     # 7. A site with no careers page anywhere.
     "https://eta.org": "<p>Donate today</p>",
+    # 9. The address as filed doesn't answer, but the "www." version does; its careers link is
+    #    broken, and a common path (/join-our-team) embeds UKG Ready.
+    "https://www.iota.org": '<a href="/careers-old">Careers</a>',
+    "https://www.iota.org/join-our-team": '<title>Join Our Team | Iota</title>'
+                                          '<iframe src="https://secure4.saashr.com/ta/6152431.careers?CareersSearch"></iframe>',
+    # 11. No careers link and no common path; the sitemap (an index of smaller sitemaps) lists
+    #     an employment page that links to Jobvite.
+    "https://lambda.org": "<p>Welcome</p>",
+    "https://lambda.org/sitemap.xml": '<sitemapindex><sitemap><loc>https://lambda.org/post-sitemap.xml</loc></sitemap>'
+                                      '<sitemap><loc>https://lambda.org/page-sitemap.xml</loc></sitemap></sitemapindex>',
+    "https://lambda.org/page-sitemap.xml": '<urlset><url><loc>https://lambda.org/about</loc></url>'
+                                           '<url><loc>https://lambda.org/about/employment-at-lambda</loc></url></urlset>',
+    "https://lambda.org/about/employment-at-lambda": '<h1>Employment</h1>'
+                                                     '<a href="https://jobs.jobvite.com/lambda-org">Openings</a>',
 }
 
+# 10. A site that answers every address with its homepage (a "soft 404"). Its homepage title
+#     mentions jobs, but that mustn't make /careers look like a careers page.
+SOFT_404_SITE = "https://kappa.org"
+SOFT_404_HOME = "<title>Kappa Jobs Coalition</title><p>We help people find work.</p>"
 
-def fake_fetch(url):
+
+def fake_fetch(url, verify=True):
     """Stand-in for find_boards.fetch_page: serves SITES, or fails like a missing page."""
+    # The soft-404 site sends every address to its homepage.
+    if url.startswith(SOFT_404_SITE):
+        return SOFT_404_SITE + "/", SOFT_404_HOME
     # Ignore a trailing slash difference only for homepages.
     key = url if url in SITES else url.rstrip("/")
     if key not in SITES:
@@ -97,6 +119,10 @@ class DetectTests(unittest.TestCase):
         self.check("https://jobs.dayforcehcm.com/en-US/acmeorg/CANDIDATEPORTAL/jobs/123", "dayforce", "acmeorg/CANDIDATEPORTAL")
         self.check("https://acme.applytojob.com/apply", "jazzhr", "acme")
         self.check("https://careers-acme.icims.com/jobs", "icims", "careers-acme")
+        self.check("https://secure3.saashr.com/ta/6152431.careers?CareersSearch", "ukg_ready", "secure3.saashr.com/6152431")
+        self.check("https://jobs.jobvite.com/acme-org/jobs", "jobvite", "acme-org")
+        self.check("https://www.idealist.org/en/nonprofit/0a1b2c-acme-org", "idealist", "0a1b2c-acme-org")
+        self.check("https://recruit.hirebridge.com/v3/Jobs/list.aspx?cid=7712", "hirebridge", "7712")
 
     def test_patterns_stay_fast_on_long_strings(self):
         # A long unbroken run of letters (like minified code) once took hours to search.
@@ -118,6 +144,42 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(found, {"ats_platform": "paylocity", "board_id": "", "board_url": ""})
 
 
+class FetchTests(unittest.TestCase):
+    """Retrying a website at other addresses, or without its broken certificate."""
+
+    def test_address_variants(self):
+        self.assertEqual(fb.address_variants("https://example.org/"),
+                         ["https://example.org/", "https://www.example.org/", "http://example.org/"])
+        self.assertEqual(fb.address_variants("http://www.example.org"),
+                         ["http://www.example.org", "http://example.org", "https://www.example.org"])
+
+    def test_broken_certificate_falls_back(self):
+        # The https page fails its certificate check and the http page doesn't exist:
+        # the page is read once more without checking the certificate.
+        calls = []
+
+        def fetch(url, verify=True):
+            calls.append((url, verify))
+            if url.startswith("https://") and verify:
+                raise urllib.error.URLError(fb.ssl.SSLError("certificate verify failed"))
+            if url.startswith("http://"):
+                raise urllib.error.URLError("refused")
+            return url, "<p>ok</p>"
+
+        with mock.patch.object(fb, "fetch_page", fetch):
+            self.assertEqual(fb.fetch_with_fallback("https://example.org")[1], "<p>ok</p>")
+        self.assertEqual(calls, [("https://example.org", True), ("http://example.org", True),
+                                 ("https://example.org", False)])
+
+    def test_other_errors_are_not_retried_without_certificate(self):
+        def fetch(url, verify=True):
+            raise urllib.error.URLError("Name or service not known")
+
+        with mock.patch.object(fb, "fetch_page", fetch):
+            with self.assertRaises(urllib.error.URLError):
+                fb.fetch_with_fallback("https://example.org")
+
+
 class FullRunTest(unittest.TestCase):
     """Runs main() over the sample websites."""
 
@@ -126,7 +188,7 @@ class FullRunTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.orgs = os.path.join(self.tmp, "orgs.csv")
         self.out = os.path.join(self.tmp, "boards.csv")
-        names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+        names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda"]
         with open(self.orgs, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=["ein", "name", "state", "size_tier", "revenue", "website"])
             w.writeheader()
@@ -134,7 +196,7 @@ class FullRunTest(unittest.TestCase):
                 w.writerow({"ein": f"00000000{i}", "name": n.upper(), "state": "TX", "size_tier": "A",
                             "revenue": str(1000 - i), "website": f"https://{n}.org"})
             # One organization without a website, in tier C.
-            w.writerow({"ein": "000000009", "name": "NO SITE", "state": "TX", "size_tier": "C",
+            w.writerow({"ein": "000000099", "name": "NO SITE", "state": "TX", "size_tier": "C",
                         "revenue": "5", "website": ""})
 
     def run_main(self, *extra):
@@ -163,7 +225,14 @@ class FullRunTest(unittest.TestCase):
         # The program and job-seeker links are skipped; the real careers page leads to JazzHR.
         self.assertEqual(rows["THETA"]["ats_platform"], "jazzhr")
         self.assertEqual(rows["THETA"]["careers_url"], "https://theta.org/about/work-here")
-        self.assertIn("Checked this run: 9", printed)
+        # Filed as "iota.org"; found at "www.iota.org" through a common path.
+        self.assertEqual(rows["IOTA"]["ats_platform"], "ukg_ready")
+        self.assertEqual(rows["IOTA"]["method"], "common path")
+        # Every address answers with the homepage: not mistaken for a careers page.
+        self.assertEqual(rows["KAPPA"]["ats_platform"], "not_found")
+        self.assertEqual(rows["LAMBDA"]["ats_platform"], "jobvite")
+        self.assertEqual(rows["LAMBDA"]["method"], "sitemap")
+        self.assertIn("Checked this run: 12", printed)
 
     def test_rerun_skips_fresh_rows(self):
         self.run_main()
@@ -194,7 +263,22 @@ class FullRunTest(unittest.TestCase):
         # Pretend every row came from an older version of the finder.
         with mock.patch.object(fb, "FINDER_VERSION", "999"):
             _, printed = self.run_main()
-        self.assertIn("to check now: 9", printed)
+        self.assertIn("to check now: 12", printed)
+
+    def test_changed_website_is_rechecked(self):
+        self.run_main()
+        # The organization list now has a website for the organization that had none.
+        with open(self.orgs, newline="") as f:
+            orgs = list(csv.DictReader(f))
+        orgs[-1]["website"] = "https://eta.org"
+        with open(self.orgs, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(orgs[0]))
+            w.writeheader()
+            w.writerows(orgs)
+        rows, printed = self.run_main()
+        # Only that one organization is checked again.
+        self.assertIn("to check now: 1", printed)
+        self.assertEqual(rows["NO SITE"]["method"], "no careers page found")
 
     def test_tiers_and_limit(self):
         rows, _ = self.run_main("--tiers", "A", "--limit", "2")
