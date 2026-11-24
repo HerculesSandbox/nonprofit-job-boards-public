@@ -100,6 +100,9 @@ jobs:
           # orgs.csv is required; boards.csv is optional (absent on the very first run).
           restore orgs.csv results/orgs
           restore boards.csv results/boards || true
+          # websites.csv (from find-websites.yml) is optional too: websites for orgs whose
+          # returns listed none.
+          restore websites.csv results/websites || true
 
       # Push runs on work branches are tests of a change, so they stop after 20 minutes.
       # Scheduled and button runs use the max_minutes box (240 by default).
