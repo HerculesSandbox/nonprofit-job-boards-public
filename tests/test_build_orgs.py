@@ -115,6 +115,12 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(bo.ntee_ok("B43"))
         self.assertFalse(bo.ntee_ok("E22"))
         self.assertFalse(bo.ntee_ok("A51"))
+        # Groups added for impact and evaluation roles: international, advocacy, policy research.
+        self.assertTrue(bo.ntee_ok("Q33"))
+        self.assertTrue(bo.ntee_ok("R20"))
+        self.assertTrue(bo.ntee_ok("W05"))
+        # Still left out: religion.
+        self.assertFalse(bo.ntee_ok("X20"))
 
     def test_object_id_from_member(self):
         # Works with or without a folder in the ZIP's file name.

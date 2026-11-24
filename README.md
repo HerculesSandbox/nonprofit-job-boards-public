@@ -18,8 +18,9 @@ roles, built in stages:
 | 3 | IRS e-file XML returns | Website, employee count, mission statement |
 
 **Filters** (all in the SETTINGS block at the top of the script):
-- Issue areas: NTEE groups B, E, F, J, K, L, O, P, S, T and V, minus universities (B40-B43) and
-  hospitals (E20-E24). Organizations with no NTEE code are kept and noted.
+- Issue areas: NTEE groups B, C, E, F, G, H, I, J, K, L, O, P, Q, R, S, T, U, V and W, minus
+  universities (B40-B43) and hospitals (E20-E24). Left out: arts (A), animals (D), public safety (M),
+  recreation (N), religion (X), mutual benefit (Y). Organizations with no NTEE code are kept and noted.
 - Size: public charities with $1M+ revenue, or 10+ employees on their 990. Private foundations
   with $10M+ in assets (they size by assets, not revenue).
 - Left out: churches, hospitals, and any names listed in the `EXCLUDE_NAMES` secret
