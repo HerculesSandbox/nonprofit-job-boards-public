@@ -72,10 +72,15 @@ from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 # ---------------------------------------------------------------------------
 
 # NTEE major groups to keep (the first letter of an organization's NTEE code):
-#   B Education, E Health, F Mental health, J Employment, K Food and nutrition,
-#   L Housing and shelter, O Youth development, P Human services,
-#   S Community improvement, T Philanthropy and grantmaking, V Social science research.
-INCLUDE_NTEE_MAJOR = set("BEFJKLOPSTV")
+#   B Education, C Environment, E Health, F Mental health, G Diseases and disorders,
+#   H Medical research, I Crime and legal services, J Employment, K Food and nutrition,
+#   L Housing and shelter, O Youth development, P Human services, Q International affairs,
+#   R Civil rights and advocacy, S Community improvement, T Philanthropy and grantmaking,
+#   U Science and technology research, V Social science research, W Public and societal benefit.
+# Left out, since evaluation leadership roles are rare there: A Arts, D Animals,
+#   M Public safety, N Recreation and sports, X Religion, Y Mutual benefit, Z Unknown.
+# set("...") turns the string into a set of single letters, so `letter in INCLUDE_NTEE_MAJOR` works.
+INCLUDE_NTEE_MAJOR = set("BCEFGHIJKLOPQRSTUVW")
 
 # Codes inside those groups to leave out, matched on the start of the code:
 #   B40-B43 colleges and universities (huge employers with their own job systems),
