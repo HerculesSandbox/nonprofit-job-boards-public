@@ -1,0 +1,13 @@
+U.S. organizations with no website in orgs.csv: 21001
+Wikidata organizations with a website: 14769
+  of them, organizations on our list: 70
+Organizations to guess for now: 0
+Guesses cleared because another organization claims the site: 0
+
+Checked this run: 0
+Organizations needing a website: 21001; found: 1359
+Found by source: {'wikidata': 70, 'guess': 1289}
+  tier A: 47 of 583
+  tier B: 184 of 1961
+  tier funder: 176 of 8117
+  tier C: 952 of 10340
